@@ -1,0 +1,316 @@
+name: Build VRMod capture package
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream branch, tag, or commit SHA
+        required: true
+        default: main
+  push:
+    paths:
+      - .github/workflows/build.yml
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: Abyss-c0re/vrmod-module-master
+  UPSTREAM_REF: ${{ inputs.ref || 'main' }}
+  SOURCE_DIRECTORY: vrmod-module-master
+  OPENVR_SDK_COMMIT: 823135df1783009cb468d0fc4190816254f7687d
+
+jobs:
+  linux:
+    name: Build Linux 32/64-bit modules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: ${{ env.SOURCE_DIRECTORY }}
+          persist-credentials: false
+
+      - name: Install Linux multilib toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            g++-multilib \
+            unzip \
+            wget
+
+      - name: Build Linux modules
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build.sh
+          ./build.sh
+
+          test -s install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux.dll
+          test -s install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll
+
+      - name: Stage Linux modules
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/linux-modules"
+          cp install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux.dll \
+            "$RUNNER_TEMP/linux-modules/"
+          cp install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll \
+            "$RUNNER_TEMP/linux-modules/"
+
+      - name: Upload Linux modules for packaging
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-modules
+          path: ${{ runner.temp }}/linux-modules/
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    name: Build Windows 32/64-bit modules
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout upstream source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: ${{ env.SOURCE_DIRECTORY }}
+          persist-credentials: false
+
+      - name: Download pinned OpenVR Windows SDK files
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "deps/openvr" | Out-Null
+
+          $baseUrl = "https://raw.githubusercontent.com/ValveSoftware/openvr/$env:OPENVR_SDK_COMMIT"
+          Invoke-WebRequest -Uri "$baseUrl/headers/openvr.h" `
+            -OutFile "deps/openvr/openvr.h"
+          Invoke-WebRequest -Uri "$baseUrl/lib/win32/openvr_api.lib" `
+            -OutFile "deps/openvr/openvr_api_win32.lib"
+          Invoke-WebRequest -Uri "$baseUrl/lib/win64/openvr_api.lib" `
+            -OutFile "deps/openvr/openvr_api_win64.lib"
+
+      - name: Build Windows modules
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio/Installer/vswhere.exe"
+          $visualStudio = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+
+          if (-not $visualStudio) {
+            throw "Visual Studio C++ toolchain was not found"
+          }
+
+          $vcvarsall = Join-Path $visualStudio "VC/Auxiliary/Build/vcvarsall.bat"
+          $sourceRoot = (Get-Location).Path
+          $sourceFile = Join-Path $sourceRoot "src/vrmod.cpp"
+          $dependencyDirectory = Join-Path $sourceRoot "deps"
+          $openvrDirectory = Join-Path $dependencyDirectory "openvr"
+          $outputDirectory = Join-Path $sourceRoot `
+            "install/GarrysMod/garrysmod/lua/bin"
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+
+          function Import-VcVars([string] $architecture) {
+            $environmentLines = & cmd.exe /d /c `
+              "call `"$vcvarsall`" $architecture >nul && set"
+            if ($LASTEXITCODE -ne 0) {
+              throw "vcvarsall failed for $architecture"
+            }
+
+            foreach ($line in $environmentLines) {
+              if ($line -match '^([^=]+)=(.*)$') {
+                [Environment]::SetEnvironmentVariable(
+                  $Matches[1],
+                  $Matches[2],
+                  [EnvironmentVariableTarget]::Process
+                )
+              }
+            }
+          }
+
+          function Build-Module(
+            [string] $architecture,
+            [string] $importLibraryName,
+            [string] $outputName
+          ) {
+            Import-VcVars $architecture
+
+            $objectFile = Join-Path $env:RUNNER_TEMP "vrmod-$architecture.obj"
+            $importLibrary = Join-Path $openvrDirectory $importLibraryName
+            $outputFile = Join-Path $outputDirectory $outputName
+
+            $compilerArguments = @(
+              "/nologo",
+              "/MT",
+              "/Oi",
+              "/O2",
+              "/W3",
+              "/wd4996",
+              "/I$dependencyDirectory",
+              "/Fo$objectFile",
+              $sourceFile,
+              "/link",
+              "/INCREMENTAL:NO",
+              "/OPT:REF",
+              "d3d11.lib",
+              "user32.lib",
+              "shell32.lib",
+              "/LIBPATH:$openvrDirectory",
+              $importLibrary,
+              "/DLL",
+              "/OUT:$outputFile"
+            )
+
+            & cl.exe @compilerArguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows $architecture build failed"
+            }
+            if (-not (Test-Path $outputFile -PathType Leaf)) {
+              throw "Missing output: $outputFile"
+            }
+          }
+
+          Build-Module "x64" "openvr_api_win64.lib" "gmcl_vrmod_win64.dll"
+          Build-Module "x86" "openvr_api_win32.lib" "gmcl_vrmod_win32.dll"
+
+      - name: Stage Windows modules
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $staging = Join-Path $env:RUNNER_TEMP "windows-modules"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          Copy-Item `
+            "install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_win32.dll" `
+            $staging
+          Copy-Item `
+            "install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_win64.dll" `
+            $staging
+
+      - name: Upload Windows modules for packaging
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-modules
+          path: ${{ runner.temp }}/windows-modules/
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: Create capture.zip
+    needs:
+      - linux
+      - windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout upstream runtime files
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: ${{ env.SOURCE_DIRECTORY }}
+          persist-credentials: false
+
+      - name: Create package directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p capture/garrysmod/lua/bin
+          cp -R "${SOURCE_DIRECTORY}/install/GarrysMod/bin" capture/bin
+
+      - name: Download Linux modules
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-modules
+          path: capture/garrysmod/lua/bin
+
+      - name: Download Windows modules
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-modules
+          path: capture/garrysmod/lua/bin
+
+      - name: Validate and create capture.zip
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("capture")
+          expected = {
+              "bin/libopenvr_api.so",
+              "bin/linux32/libopenvr_api.so",
+              "bin/linux64/libopenvr_api.so",
+              "bin/openvr_api.dll",
+              "bin/openvr_license",
+              "bin/win64/HTC_License",
+              "bin/win64/SRWorks_Log.dll",
+              "bin/win64/SRanipal.dll",
+              "bin/win64/ViveSR_Client.dll",
+              "bin/win64/libHTC_License.dll",
+              "bin/win64/nanomsg.dll",
+              "bin/win64/openvr_api.dll",
+              "garrysmod/lua/bin/gmcl_vrmod_linux.dll",
+              "garrysmod/lua/bin/gmcl_vrmod_linux64.dll",
+              "garrysmod/lua/bin/gmcl_vrmod_win32.dll",
+              "garrysmod/lua/bin/gmcl_vrmod_win64.dll",
+          }
+
+          actual = {
+              path.relative_to(root).as_posix()
+              for path in root.rglob("*")
+              if path.is_file()
+          }
+
+          missing = sorted(expected - actual)
+          extra = sorted(actual - expected)
+          empty = sorted(
+              item for item in expected
+              if (root / item).is_file() and (root / item).stat().st_size == 0
+          )
+
+          if missing or extra or empty:
+              raise SystemExit(
+                  f"Package validation failed\n"
+                  f"missing={missing}\nextra={extra}\nempty={empty}"
+              )
+          PY
+
+          (
+            cd capture
+            zip -9 -r "$GITHUB_WORKSPACE/capture.zip" bin garrysmod
+          )
+
+          unzip -t capture.zip
+          unzip -l capture.zip
+
+      - name: Upload capture.zip
+        uses: actions/upload-artifact@v7
+        with:
+          path: capture.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
