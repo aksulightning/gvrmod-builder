@@ -106,24 +106,29 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $sourcePath = "src/vrmod.cpp"
-          $source = Get-Content $sourcePath -Raw
+          # Normalize CRLF/LF first so the source patch behaves identically on
+          # every Windows runner and for every Git checkout configuration.
+          $source = (Get-Content $sourcePath -Raw).Replace("`r`n", "`n")
 
           # These OpenGL declarations are used only by the Linux branch. The
           # current upstream main accidentally leaves them visible on Windows.
-          $globalPattern = '(?m)^typedef void \(APIENTRYP PFNGLBINDFRAMEBUFFERPROC\)\(GLenum, GLuint\);\r?\nstatic PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;$'
-          if ([regex]::IsMatch($source, $globalPattern)) {
-            $globalReplacement = @'
+          $globalOriginal = @'
+          typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
+          static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;
+          '@
+          $globalReplacement = @'
           #ifndef _WIN32
           typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
           static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;
           #endif
           '@
-            $source = [regex]::Replace(
-              $source,
-              $globalPattern,
-              $globalReplacement,
-              1
-            )
+
+          if ($source.Contains($globalOriginal)) {
+            $source = $source.Replace($globalOriginal, $globalReplacement)
+          }
+
+          if (-not $source.Contains($globalReplacement)) {
+            throw "OpenGL declarations were not protected for Windows"
           }
 
           # Keep Linux GL validation inside the Linux branch. On Windows,
