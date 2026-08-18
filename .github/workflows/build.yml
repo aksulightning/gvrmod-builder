@@ -40,6 +40,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             g++-multilib \
+            libgl1-mesa-dev \
             unzip \
             wget
 
@@ -86,7 +87,7 @@ jobs:
           path: ${{ env.SOURCE_DIRECTORY }}
           persist-credentials: false
 
-      - name: Download pinned OpenVR Windows SDK files
+      - name: Download pinned OpenVR Windows import libraries
         working-directory: ${{ env.SOURCE_DIRECTORY }}
         shell: pwsh
         run: |
@@ -94,12 +95,128 @@ jobs:
           New-Item -ItemType Directory -Force -Path "deps/openvr" | Out-Null
 
           $baseUrl = "https://raw.githubusercontent.com/ValveSoftware/openvr/$env:OPENVR_SDK_COMMIT"
-          Invoke-WebRequest -Uri "$baseUrl/headers/openvr.h" `
-            -OutFile "deps/openvr/openvr.h"
           Invoke-WebRequest -Uri "$baseUrl/lib/win32/openvr_api.lib" `
             -OutFile "deps/openvr/openvr_api_win32.lib"
           Invoke-WebRequest -Uri "$baseUrl/lib/win64/openvr_api.lib" `
             -OutFile "deps/openvr/openvr_api_win64.lib"
+
+      - name: Patch upstream Windows GL regressions
+        working-directory: ${{ env.SOURCE_DIRECTORY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sourcePath = "src/vrmod.cpp"
+          $source = Get-Content $sourcePath -Raw
+
+          # These OpenGL declarations are used only by the Linux branch. The
+          # current upstream main accidentally leaves them visible on Windows.
+          $globalPattern = '(?m)^typedef void \(APIENTRYP PFNGLBINDFRAMEBUFFERPROC\)\(GLenum, GLuint\);\r?\nstatic PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;$'
+          if ([regex]::IsMatch($source, $globalPattern)) {
+            $globalReplacement = @'
+          #ifndef _WIN32
+          typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
+          static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;
+          #endif
+          '@
+            $source = [regex]::Replace(
+              $source,
+              $globalPattern,
+              $globalReplacement,
+              1
+            )
+          }
+
+          # Keep Linux GL validation inside the Linux branch. On Windows,
+          # ShareTextureFinish has already prepared g_vrTexture as DirectX.
+          if ($source.Contains("// Set texture type & color space explicitly")) {
+            $submitPattern = '(?s)LUA_FUNCTION\(SubmitSharedTexture\) \{.*?\r?\n\}\r?\n\r?\nLUA_FUNCTION\(Shutdown\) \{'
+            if (-not [regex]::IsMatch($source, $submitPattern)) {
+              throw "SubmitSharedTexture function was not found"
+            }
+
+            $submitReplacement = @'
+          LUA_FUNCTION(SubmitSharedTexture) {
+          #ifdef _WIN32
+              if (!g_d3d11Texture) {
+                  LUA->ThrowError("VRMOD: Invalid D3D11 shared texture.");
+                  return 0;
+              }
+
+              if (g_pD3D9Device) {
+                  IDirect3DQuery9* eventQuery = nullptr;
+                  g_pD3D9Device->CreateQuery(D3DQUERYTYPE_EVENT, &eventQuery);
+                  if (eventQuery) {
+                      eventQuery->Issue(D3DISSUE_END);
+                      while (eventQuery->GetData(nullptr, 0, D3DGETDATA_FLUSH) != S_OK) {}
+                      eventQuery->Release();
+                  }
+              }
+          #else
+              if (g_sharedTexture == 0 ||
+                  g_sharedTexture == GL_INVALID_VALUE ||
+                  !glIsTexture(g_sharedTexture)) {
+                  LUA->ThrowError("VRMOD: Invalid shared texture.");
+                  return 0;
+              }
+
+              g_vrTexture.eType = vr::TextureType_OpenGL;
+              g_vrTexture.eColorSpace = vr::ColorSpace_Gamma;
+          #endif
+
+              if (!vr::VRCompositor()) {
+                  LUA->ThrowError("VRMOD: VR Compositor is null.");
+                  return 0;
+              }
+
+              if (!vr::VRCompositor()->CanRenderScene()) {
+                  LuaPrint(LUA, "VRMOD: Submit skipped because compositor does not have focus");
+                  return 0;
+              }
+
+              if (!g_vrTexture.handle) {
+                  LUA->ThrowError("VRMOD: VR texture handle is null.");
+                  return 0;
+              }
+
+              vr::EVRCompositorError errLeft = vr::VRCompositor()->Submit(
+                  vr::Eye_Left,
+                  &g_vrTexture,
+                  &g_textureBoundsLeft
+              );
+              vr::EVRCompositorError errRight = vr::VRCompositor()->Submit(
+                  vr::Eye_Right,
+                  &g_vrTexture,
+                  &g_textureBoundsRight
+              );
+
+              if (errLeft != vr::VRCompositorError_None ||
+                  errRight != vr::VRCompositorError_None) {
+                  std::string errMsg =
+                      "VRMOD: OpenVR Submit failed: Left: " +
+                      std::to_string(errLeft) +
+                      ", Right: " +
+                      std::to_string(errRight);
+                  LuaPrint(LUA, errMsg.c_str());
+              }
+
+              return 0;
+          }
+
+          LUA_FUNCTION(Shutdown) {
+          '@
+            $source = [regex]::Replace(
+              $source,
+              $submitPattern,
+              $submitReplacement,
+              1
+            )
+          }
+
+          Set-Content `
+            -Path $sourcePath `
+            -Value $source `
+            -Encoding utf8NoBOM `
+            -NoNewline
 
       - name: Build Windows modules
         working-directory: ${{ env.SOURCE_DIRECTORY }}
