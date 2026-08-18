@@ -112,23 +112,28 @@ jobs:
 
           # These OpenGL declarations are used only by the Linux branch. The
           # current upstream main accidentally leaves them visible on Windows.
-          $globalOriginal = @'
-          typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
-          static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;
-          '@
-          $globalReplacement = @'
-          #ifndef _WIN32
-          typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);
-          static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;
-          #endif
-          '@
+          # Construct these blocks with explicit LF characters. GitHub writes
+          # the generated PowerShell script itself using CRLF, so a here-string
+          # would otherwise fail to match the normalized C++ source.
+          $globalOriginal = @(
+            "typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);"
+            "static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;"
+          ) -join "`n"
+          $globalReplacement = @(
+            "#ifndef _WIN32"
+            "typedef void (APIENTRYP PFNGLBINDFRAMEBUFFERPROC)(GLenum, GLuint);"
+            "static PFNGLBINDFRAMEBUFFERPROC pglBindFramebuffer = NULL;"
+            "#endif"
+          ) -join "`n"
 
           if ($source.Contains($globalOriginal)) {
             $source = $source.Replace($globalOriginal, $globalReplacement)
           }
 
           if (-not $source.Contains($globalReplacement)) {
-            throw "OpenGL declarations were not protected for Windows"
+            $foundDeclarations = ($source -split "`n" |
+              Where-Object { $_ -match 'PFNGLBINDFRAMEBUFFERPROC' }) -join ' | '
+            throw "OpenGL declarations were not protected for Windows. Found: $foundDeclarations"
           }
 
           # Keep Linux GL validation inside the Linux branch. On Windows,
@@ -209,6 +214,7 @@ jobs:
 
           LUA_FUNCTION(Shutdown) {
           '@
+            $submitReplacement = $submitReplacement.Replace("`r`n", "`n")
             $source = [regex]::Replace(
               $source,
               $submitPattern,
