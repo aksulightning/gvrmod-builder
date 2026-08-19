@@ -8,8 +8,14 @@ on:
         required: true
         default: main
   push:
+    branches:
+      - '**'
     paths:
       - .github/workflows/build.yml
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -343,11 +349,13 @@ jobs:
           retention-days: 1
 
   package:
-    name: Create capture.zip
+    name: Create nightly.zip and replace nightly release
     needs:
       - linux
       - windows
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout upstream runtime files
@@ -377,7 +385,7 @@ jobs:
           name: windows-modules
           path: capture/garrysmod/lua/bin
 
-      - name: Validate and create capture.zip
+      - name: Validate and create nightly.zip
         shell: bash
         run: |
           set -euxo pipefail
@@ -429,16 +437,45 @@ jobs:
 
           (
             cd capture
-            zip -9 -r "$GITHUB_WORKSPACE/capture.zip" bin garrysmod
+            zip -9 -r "$GITHUB_WORKSPACE/nightly.zip" bin garrysmod
           )
 
-          unzip -t capture.zip
-          unzip -l capture.zip
+          unzip -t nightly.zip
+          unzip -l nightly.zip
 
-      - name: Upload capture.zip
+      - name: Upload nightly.zip
         uses: actions/upload-artifact@v7
         with:
-          path: capture.zip
+          name: nightly
+          path: nightly.zip
           archive: false
           if-no-files-found: error
           retention-days: 30
+
+      - name: Replace nightly GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_tag="nightly"
+
+          if gh release view "$release_tag" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$release_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag \
+              --yes
+          elif gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/tags/$release_tag" \
+            >/dev/null 2>&1; then
+            gh api \
+              --method DELETE \
+              "repos/$GITHUB_REPOSITORY/git/refs/tags/$release_tag"
+          fi
+
+          gh release create "$release_tag" nightly.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Nightly Build" \
+            --notes "Automated build of ${UPSTREAM_REPOSITORY}@${UPSTREAM_REF} from workflow run ${GITHUB_RUN_NUMBER}."
