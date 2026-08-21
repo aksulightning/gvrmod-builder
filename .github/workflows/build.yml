@@ -22,8 +22,8 @@ env:
 
   VRMOD_X64_REPOSITORY: Abyss-c0re/vrmod-x64
 
-  OPENVR_SDK_REPOSITORY: ValveSoftware/openvr
-  OPENVR_SDK_REF: master
+  OPENVR_REPOSITORY: ValveSoftware/openvr
+  OPENVR_REF: master
 
   OPENXR_SDK_REPOSITORY: KhronosGroup/OpenXR-SDK
   OPENXR_SDK_REF: main
@@ -38,7 +38,7 @@ jobs:
       gvrmod_sha: ${{ steps.refs.outputs.gvrmod_sha }}
       openvr_module_sha: ${{ steps.refs.outputs.openvr_module_sha }}
       vrmod_x64_sha: ${{ steps.refs.outputs.vrmod_x64_sha }}
-      openvr_sdk_sha: ${{ steps.refs.outputs.openvr_sdk_sha }}
+      openvr_sha: ${{ steps.refs.outputs.openvr_sha }}
       openxr_sdk_sha: ${{ steps.refs.outputs.openxr_sdk_sha }}
 
     env:
@@ -84,10 +84,10 @@ jobs:
               "$OPENVR_MODULE_REF"
           )"
 
-          openvr_sdk_sha="$(
+          openvr_sha="$(
             resolve_ref \
-              "$OPENVR_SDK_REPOSITORY" \
-              "$OPENVR_SDK_REF"
+              "$OPENVR_REPOSITORY" \
+              "$OPENVR_REF"
           )"
 
           openxr_sdk_sha="$(
@@ -96,8 +96,7 @@ jobs:
               "$OPENXR_SDK_REF"
           )"
 
-          # Resolve vrmod-x64 from gVRMod's exact gitlink. The independent
-          # vrmod-x64 main branch is not guaranteed to match gVRMod's tests.
+          # vrmod-x64 must match the exact gitlink stored in gVRMod.
           submodule_json="$(
             gh api \
               -H "Accept: application/vnd.github+json" \
@@ -135,14 +134,14 @@ jobs:
             echo "gvrmod_sha=$gvrmod_sha"
             echo "openvr_module_sha=$openvr_module_sha"
             echo "vrmod_x64_sha=$vrmod_x64_sha"
-            echo "openvr_sdk_sha=$openvr_sdk_sha"
+            echo "openvr_sha=$openvr_sha"
             echo "openxr_sdk_sha=$openxr_sdk_sha"
           } >> "$GITHUB_OUTPUT"
 
           echo "$GVRMOD_REPOSITORY@$GVRMOD_REF -> $gvrmod_sha"
           echo "$OPENVR_MODULE_REPOSITORY@$OPENVR_MODULE_REF -> $openvr_module_sha"
           echo "$VRMOD_X64_REPOSITORY@gVRMod-gitlink -> $vrmod_x64_sha"
-          echo "$OPENVR_SDK_REPOSITORY@$OPENVR_SDK_REF -> $openvr_sdk_sha"
+          echo "$OPENVR_REPOSITORY@$OPENVR_REF -> $openvr_sha"
           echo "$OPENXR_SDK_REPOSITORY@$OPENXR_SDK_REF -> $openxr_sdk_sha"
 
   linux:
@@ -171,7 +170,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Checkout OpenVR Garry's Mod module
+      - name: Checkout upstream OpenVR module bundle
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ env.OPENVR_MODULE_REPOSITORY }}
@@ -180,17 +179,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Checkout OpenVR runtime library
+      - name: Checkout OpenVR license
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          repository: ${{ env.OPENVR_SDK_REPOSITORY }}
-          ref: ${{ needs.resolve.outputs.openvr_sdk_sha }}
-          path: src/openvr-sdk
+          repository: ${{ env.OPENVR_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.openvr_sha }}
+          path: src/openvr-license
           fetch-depth: 1
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
-            bin/linux64/libopenvr_api.so
             LICENSE
 
       - name: Checkout OpenXR SDK
@@ -203,35 +201,34 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Verify source layout and version compatibility
+      - name: Verify source and upstream binary layout
         shell: bash
         run: |
           set -euo pipefail
 
           required=(
             src/gvrmod/CMakeLists.txt
+            src/gvrmod/LICENSE
             src/gvrmod/addon/vrmod-x64/addon.json
+            src/gvrmod/addon/vrmod-x64/LICENSE
             src/gvrmod/addon/vrmod-x64/lua/vrmod/utils/sh_math.lua
             src/gvrmod/addon/vrmod-x64/lua/vrmod/utils/sh_desktop_mirror_law.lua
-            src/openvr-module/src/vrmod.cpp
-            src/openvr-module/deps/openvr/openvr.h
-            src/openvr-sdk/bin/linux64/libopenvr_api.so
+            src/openvr-module/LICENSE
+            src/openvr-module/deps/gmod/Interface.h
+            src/openvr-module/install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll
+            src/openvr-module/install/GarrysMod/bin/linux64/libopenvr_api.so
+            src/openvr-license/LICENSE
             src/openxr-sdk/CMakeLists.txt
+            src/openxr-sdk/LICENSE
             src/openxr-sdk/include/openxr/openxr.h
           )
 
           for path in "${required[@]}"; do
             if [[ ! -f "$path" ]]; then
-              echo "::error file=${path}::Required source file is missing"
+              echo "::error file=${path}::Required source or upstream binary is missing"
               exit 1
             fi
           done
-
-          header="src/openvr-module/deps/openvr/openvr.h"
-
-          grep -q "GetPoseActionDataRelativeToNow" "$header"
-          grep -q "EVRSummaryType" "$header"
-          grep -q "GetSkeletalSummaryData" "$header"
 
           actual_addon_sha="$(
             git -C src/gvrmod/addon/vrmod-x64 rev-parse HEAD
@@ -257,6 +254,7 @@ jobs:
             --yes \
             --no-install-recommends \
             build-essential \
+            binutils \
             cmake \
             ninja-build \
             python3 \
@@ -355,33 +353,30 @@ jobs:
           lua5.1 tests/lua/run.lua
           lua5.1 tests/scenarios/run.lua
 
-      - name: Build OpenVR Garry's Mod module
+      - name: Stage pinned upstream OpenVR Linux bundle
         shell: bash
         run: |
           set -euo pipefail
 
-          module="$GITHUB_WORKSPACE/src/openvr-module"
-          openvr_sdk="$GITHUB_WORKSPACE/src/openvr-sdk"
+          module_root="$GITHUB_WORKSPACE/src/openvr-module"
           output="$GITHUB_WORKSPACE/out"
+
+          module_source="$module_root/install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll"
+          runtime_source="$module_root/install/GarrysMod/bin/linux64/libopenvr_api.so"
+
+          test -s "$module_source"
+          test -s "$runtime_source"
 
           mkdir -p "$output"
 
-          g++ \
-            -std=c++17 \
-            -fPIC \
-            -shared \
-            -m64 \
-            -O3 \
-            -I "$module/deps" \
-            "$module/src/vrmod.cpp" \
-            -L "$openvr_sdk/bin/linux64" \
-            -lopenvr_api \
-            -ldl \
-            -Wl,-rpath,\$ORIGIN \
-            -o "$output/gmcl_vrmod_linux64.dll"
+          install \
+            -m 0755 \
+            "$module_source" \
+            "$output/gmcl_vrmod_linux64.dll"
 
-          cp -L \
-            "$openvr_sdk/bin/linux64/libopenvr_api.so" \
+          install \
+            -m 0644 \
+            "$runtime_source" \
             "$output/libopenvr_api.so"
 
       - name: Build OpenXR loader
@@ -424,7 +419,7 @@ jobs:
           cp -L "$loader" "$output/libopenxr_loader.so"
           cp -L "$loader" "$output/libopenxr_loader.so.1"
 
-      - name: Collect Linux modules and licenses
+      - name: Collect Linux gVRMod modules and licenses
         shell: bash
         run: |
           set -euo pipefail
@@ -470,14 +465,14 @@ jobs:
             "$output/licenses/vrmod-module-master-LICENSE.txt"
 
           cp \
-            src/openvr-sdk/LICENSE \
+            src/openvr-license/LICENSE \
             "$output/licenses/OpenVR-LICENSE.txt"
 
           cp \
             src/openxr-sdk/LICENSE \
             "$output/licenses/OpenXR-SDK-LICENSE.txt"
 
-      - name: Validate Linux artifacts
+      - name: Validate Linux artifacts and exports
         shell: bash
         run: |
           set -euo pipefail
@@ -508,6 +503,18 @@ jobs:
             "$GITHUB_WORKSPACE/out/gmcl_vrmod_linux64.dll" \
             "$GITHUB_WORKSPACE/out/gmcl_vrmod_quest_linux64.dll"
           do
+            exports="$(nm -D --defined-only "$module")"
+
+            if ! grep -Eq '[[:space:]]gmod13_open$' <<< "$exports"; then
+              echo "::error file=${module}::Missing gmod13_open export"
+              exit 1
+            fi
+
+            if ! grep -Eq '[[:space:]]gmod13_close$' <<< "$exports"; then
+              echo "::error file=${module}::Missing gmod13_close export"
+              exit 1
+            fi
+
             dependencies="$(
               LD_LIBRARY_PATH="$GITHUB_WORKSPACE/out" ldd "$module"
             )"
@@ -546,7 +553,7 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      - name: Checkout OpenVR Garry's Mod module
+      - name: Checkout upstream OpenVR module bundle
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ env.OPENVR_MODULE_REPOSITORY }}
@@ -554,20 +561,6 @@ jobs:
           path: src/openvr-module
           fetch-depth: 1
           persist-credentials: false
-
-      - name: Checkout OpenVR runtime library
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: ${{ env.OPENVR_SDK_REPOSITORY }}
-          ref: ${{ needs.resolve.outputs.openvr_sdk_sha }}
-          path: src/openvr-sdk
-          fetch-depth: 1
-          persist-credentials: false
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            lib/win64/openvr_api.lib
-            bin/win64/openvr_api.dll
-            LICENSE
 
       - name: Checkout OpenXR SDK
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -579,42 +572,27 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Verify source layout
+      - name: Verify source and upstream binary layout
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $required = @(
             "src\gvrmod\CMakeLists.txt",
-            "src\openvr-module\src\vrmod.cpp",
-            "src\openvr-module\deps\gmod\LuaBase.h",
-            "src\openvr-module\deps\openvr\openvr.h",
-            "src\openvr-sdk\lib\win64\openvr_api.lib",
-            "src\openvr-sdk\bin\win64\openvr_api.dll",
+            "src\openvr-module\deps\gmod\Interface.h",
+            "src\openvr-module\install\GarrysMod\garrysmod\lua\bin\gmcl_vrmod_win64.dll",
+            "src\openvr-module\install\GarrysMod\bin\win64\openvr_api.dll",
             "src\openxr-sdk\CMakeLists.txt",
             "src\openxr-sdk\include\openxr\openxr.h"
           )
 
           foreach ($path in $required) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Required source file does not exist: $path"
+              throw "Required source or upstream binary is missing: $path"
             }
-          }
 
-          $header = "src\openvr-module\deps\openvr\openvr.h"
-
-          foreach ($symbol in @(
-            "GetPoseActionDataRelativeToNow",
-            "EVRSummaryType",
-            "GetSkeletalSummaryData"
-          )) {
-            if (-not (
-              Select-String `
-                -LiteralPath $header `
-                -Pattern $symbol `
-                -Quiet
-            )) {
-              throw "Vendored OpenVR header is missing: $symbol"
+            if ((Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Required source or upstream binary is empty: $path"
             }
           }
 
@@ -649,6 +627,9 @@ jobs:
             -Recurse `
             -Force
 
+          # gVRMod's Windows implementation uses GLuint declarations without
+          # including an OpenGL header. This header affects only the gVRMod
+          # build and does not modify OpenVR/OpenXR source repositories.
           $shim = Join-Path `
             $env:RUNNER_TEMP `
             "gvrmod_windows_types.h"
@@ -704,149 +685,49 @@ jobs:
             throw "gVRMod Windows build failed: $LASTEXITCODE"
           }
 
-      - name: Build OpenVR Garry's Mod module
+      - name: Stage pinned upstream OpenVR Windows bundle
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          # MSVC setup and compilation must happen in this same step so
-          # INCLUDE, LIB and PATH remain available.
-          $vswhere = Join-Path `
-            ${env:ProgramFiles(x86)} `
-            "Microsoft Visual Studio\Installer\vswhere.exe"
-
-          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-            throw "vswhere.exe was not found"
-          }
-
-          $vsInstall = (
-            & $vswhere `
-              -latest `
-              -products "*" `
-              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-              -property installationPath |
-            Select-Object -First 1
-          )
-
-          if (-not $vsInstall) {
-            throw "Visual Studio C++ installation was not found"
-          }
-
-          $devShell = Join-Path `
-            $vsInstall `
-            "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-
-          if (-not (Test-Path -LiteralPath $devShell -PathType Leaf)) {
-            throw "Visual Studio DevShell module was not found: $devShell"
-          }
-
-          Import-Module $devShell
-
-          Enter-VsDevShell `
-            -VsInstallPath $vsInstall `
-            -SkipAutomaticLocation `
-            -DevCmdArguments "-arch=x64 -host_arch=x64"
-
-          if (-not $env:INCLUDE) {
-            throw "MSVC INCLUDE environment was not initialized"
-          }
-
-          if (-not $env:LIB) {
-            throw "MSVC LIB environment was not initialized"
-          }
-
-          $cl = Get-Command cl.exe -ErrorAction Stop
-
-          Write-Host "Compiler: $($cl.Source)"
-          Write-Host "INCLUDE: $env:INCLUDE"
-
-          $source = Join-Path `
+          $moduleRoot = Join-Path `
             $env:GITHUB_WORKSPACE `
-            "src\openvr-module\src\vrmod.cpp"
+            "src\openvr-module"
 
-          $deps = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "src\openvr-module\deps"
+          $output = Join-Path $env:GITHUB_WORKSPACE "out"
 
-          $openvrLib = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "src\openvr-sdk\lib\win64"
+          $moduleSource = Join-Path `
+            $moduleRoot `
+            "install\GarrysMod\garrysmod\lua\bin\gmcl_vrmod_win64.dll"
 
-          $work = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "build\openvr-windows"
+          $runtimeSource = Join-Path `
+            $moduleRoot `
+            "install\GarrysMod\bin\win64\openvr_api.dll"
 
-          $outputDirectory = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "out"
+          foreach ($path in @($moduleSource, $runtimeSource)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing upstream OpenVR bundle file: $path"
+            }
 
-          $output = Join-Path `
-            $outputDirectory `
-            "gmcl_vrmod_win64.dll"
-
-          New-Item `
-            -ItemType Directory `
-            -Path $work `
-            -Force | Out-Null
-
-          New-Item `
-            -ItemType Directory `
-            -Path $outputDirectory `
-            -Force | Out-Null
-
-          # vrmod.cpp uses OpenGL 1.1 types and glIsTexture in its Windows
-          # branch, but does not include GL/gl.h. Supply the system OpenGL
-          # declarations with a build-only forced-include header.
-          $glShim = Join-Path `
-            $env:RUNNER_TEMP `
-            "openvr_windows_gl.h"
-
-          @'
-          #pragma once
-          #include <Windows.h>
-          #include <GL/gl.h>
-          '@ | Set-Content `
-            -LiteralPath $glShim `
-            -Encoding ascii
-
-          if (-not (Test-Path -LiteralPath $glShim -PathType Leaf)) {
-            throw "Failed to create the OpenVR Windows GL shim"
-          }
-
-          Push-Location $work
-
-          try {
-            $arguments = @(
-              "/nologo",
-              "/LD",
-              "/MT",
-              "/O2",
-              "/W3",
-              "/wd4996",
-              "/I$deps",
-              "/FI$glShim",
-              $source,
-              "/link",
-              "/INCREMENTAL:NO",
-              "/OPT:REF",
-              "d3d11.lib",
-              "user32.lib",
-              "shell32.lib",
-              "opengl32.lib",
-              "/LIBPATH:$openvrLib",
-              "openvr_api.lib",
-              "/OUT:$output"
-            )
-
-            & $cl.Source @arguments
-
-            if ($LASTEXITCODE -ne 0) {
-              throw "OpenVR module build failed: $LASTEXITCODE"
+            if ((Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Empty upstream OpenVR bundle file: $path"
             }
           }
-          finally {
-            Pop-Location
-          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $output `
+            -Force | Out-Null
+
+          Copy-Item `
+            -LiteralPath $moduleSource `
+            -Destination (Join-Path $output "gmcl_vrmod_win64.dll") `
+            -Force
+
+          Copy-Item `
+            -LiteralPath $runtimeSource `
+            -Destination (Join-Path $output "openvr_api.dll") `
+            -Force
 
       - name: Build OpenXR loader
         shell: pwsh
@@ -906,20 +787,16 @@ jobs:
             -Destination (Join-Path $output "openxr_loader.dll") `
             -Force
 
-      - name: Collect Windows modules
+      - name: Collect Windows gVRMod module
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           $output = Join-Path $env:GITHUB_WORKSPACE "out"
+
           $installBin = Join-Path `
             $env:GITHUB_WORKSPACE `
             "src\gvrmod\install\GarrysMod\garrysmod\lua\bin"
-
-          New-Item `
-            -ItemType Directory `
-            -Path $output `
-            -Force | Out-Null
 
           $gvrmodModule = Get-ChildItem `
             -LiteralPath $installBin `
@@ -939,18 +816,7 @@ jobs:
             ) `
             -Force
 
-          Copy-Item `
-            -LiteralPath (
-              Join-Path `
-                $env:GITHUB_WORKSPACE `
-                "src\openvr-sdk\bin\win64\openvr_api.dll"
-            ) `
-            -Destination (
-              Join-Path $output "openvr_api.dll"
-            ) `
-            -Force
-
-      - name: Validate Windows PE artifacts
+      - name: Validate Windows PE artifacts and module exports
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1020,6 +886,76 @@ jobs:
             }
 
             Assert-Amd64Pe -Path $path
+          }
+
+          # Use dumpbin only as a validator. Nothing is compiled here.
+          $vswhere = Join-Path `
+            ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio\Installer\vswhere.exe"
+
+          $vsInstall = (
+            & $vswhere `
+              -latest `
+              -products "*" `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath |
+            Select-Object -First 1
+          )
+
+          if (-not $vsInstall) {
+            throw "Visual Studio C++ installation was not found"
+          }
+
+          $devShell = Join-Path `
+            $vsInstall `
+            "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+
+          Import-Module $devShell
+
+          Enter-VsDevShell `
+            -VsInstallPath $vsInstall `
+            -SkipAutomaticLocation `
+            -DevCmdArguments "-arch=x64 -host_arch=x64"
+
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction Stop
+
+          foreach ($moduleName in @(
+            "gmcl_vrmod_xr_win64.dll",
+            "gmcl_vrmod_win64.dll"
+          )) {
+            $modulePath = Join-Path $output $moduleName
+
+            $exports = (
+              & $dumpbin.Source /NOLOGO /EXPORTS $modulePath 2>&1 |
+              Out-String
+            )
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "dumpbin failed for $moduleName"
+            }
+
+            foreach ($symbol in @("gmod13_open", "gmod13_close")) {
+              if ($exports -notmatch "(?m)\b$symbol\b") {
+                throw "$moduleName is missing export: $symbol"
+              }
+            }
+          }
+
+          $legacyDependencies = (
+            & $dumpbin.Source `
+              /NOLOGO `
+              /DEPENDENTS `
+              (Join-Path $output "gmcl_vrmod_win64.dll") `
+              2>&1 |
+            Out-String
+          )
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect gmcl_vrmod_win64.dll dependencies"
+          }
+
+          if ($legacyDependencies -notmatch "(?i)\bopenvr_api\.dll\b") {
+            throw "gmcl_vrmod_win64.dll does not import openvr_api.dll"
           }
 
       - name: Upload Windows artifacts
@@ -1119,6 +1055,8 @@ jobs:
               "$addon_target/$directory"
           done
 
+          # Only native binaries produced or explicitly staged by this
+          # workflow may enter the package.
           find "$addon_target" \
             -type f \
             \( \
@@ -1176,19 +1114,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          manifest="$GITHUB_WORKSPACE/stage/BUILD-MANIFEST.txt"
+          stage="$GITHUB_WORKSPACE/stage"
+          manifest="$stage/BUILD-MANIFEST.txt"
 
           {
             echo "gVRMod=${{ needs.resolve.outputs.gvrmod_sha }}"
             echo "vrmod-module-master=${{ needs.resolve.outputs.openvr_module_sha }}"
             echo "vrmod-x64=${{ needs.resolve.outputs.vrmod_x64_sha }}"
             echo "vrmod-x64-source=gVRMod addon/vrmod-x64 gitlink"
-            echo "OpenVR=${{ needs.resolve.outputs.openvr_sdk_sha }}"
+            echo "legacy-openvr-binaries=vrmod-module-master bundled artifacts"
+            echo "OpenVR-license=${{ needs.resolve.outputs.openvr_sha }}"
             echo "OpenXR-SDK=${{ needs.resolve.outputs.openxr_sdk_sha }}"
             echo "builder=${GITHUB_REPOSITORY}@${GITHUB_SHA}"
             echo "workflow-run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "built-at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "Packaged native file SHA-256:"
           } > "$manifest"
+
+          (
+            cd "$stage"
+
+            find garrysmod/lua/bin bin \
+              -type f \
+              -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum
+          ) >> "$manifest"
 
       - name: Validate package tree
         shell: bash
@@ -1387,6 +1339,6 @@ jobs:
             "$GITHUB_WORKSPACE/all-in-one.zip#all-in-one.zip" \
             --target "$GITHUB_SHA" \
             --title "gVRMod nightly" \
-            --notes "Automated Windows/Wine and Linux x86-64 all-in-one build. Extract directly into the GarrysMod installation directory. Exact source revisions are recorded inside BUILD-MANIFEST.txt." \
+            --notes "Automated Windows/Wine and Linux x86-64 all-in-one build. Extract directly into the GarrysMod installation directory. Exact source revisions and native SHA-256 checksums are recorded inside BUILD-MANIFEST.txt." \
             --prerelease \
             --latest=false
