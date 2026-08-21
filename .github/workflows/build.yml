@@ -21,7 +21,6 @@ env:
   OPENVR_MODULE_REF: main
 
   VRMOD_X64_REPOSITORY: Abyss-c0re/vrmod-x64
-  VRMOD_X64_REF: main
 
   OPENVR_SDK_REPOSITORY: ValveSoftware/openvr
   OPENVR_SDK_REF: master
@@ -55,7 +54,6 @@ jobs:
           resolve_ref() {
             local repository="$1"
             local reference="$2"
-            local output_name="$3"
             local sha
 
             sha="$(
@@ -67,38 +65,86 @@ jobs:
             )"
 
             if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::Could not resolve ${repository}@${reference}"
+              echo "::error::Could not resolve ${repository}@${reference}" >&2
               exit 1
             fi
 
-            echo "${output_name}=${sha}" >> "$GITHUB_OUTPUT"
-            echo "${repository}@${reference} -> ${sha}"
+            printf '%s\n' "$sha"
           }
 
-          resolve_ref \
-            "$GVRMOD_REPOSITORY" \
-            "$GVRMOD_REF" \
-            "gvrmod_sha"
+          gvrmod_sha="$(
+            resolve_ref \
+              "$GVRMOD_REPOSITORY" \
+              "$GVRMOD_REF"
+          )"
 
-          resolve_ref \
-            "$OPENVR_MODULE_REPOSITORY" \
-            "$OPENVR_MODULE_REF" \
-            "openvr_module_sha"
+          openvr_module_sha="$(
+            resolve_ref \
+              "$OPENVR_MODULE_REPOSITORY" \
+              "$OPENVR_MODULE_REF"
+          )"
 
-          resolve_ref \
-            "$VRMOD_X64_REPOSITORY" \
-            "$VRMOD_X64_REF" \
-            "vrmod_x64_sha"
+          openvr_sdk_sha="$(
+            resolve_ref \
+              "$OPENVR_SDK_REPOSITORY" \
+              "$OPENVR_SDK_REF"
+          )"
 
-          resolve_ref \
-            "$OPENVR_SDK_REPOSITORY" \
-            "$OPENVR_SDK_REF" \
-            "openvr_sdk_sha"
+          openxr_sdk_sha="$(
+            resolve_ref \
+              "$OPENXR_SDK_REPOSITORY" \
+              "$OPENXR_SDK_REF"
+          )"
 
-          resolve_ref \
-            "$OPENXR_SDK_REPOSITORY" \
-            "$OPENXR_SDK_REF" \
-            "openxr_sdk_sha"
+          # vrmod-x64 must match the exact gitlink recorded by gVRMod.
+          # Its independent main branch can be older or otherwise incompatible
+          # with gVRMod's tests and native module.
+          submodule_json="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GVRMOD_REPOSITORY}/contents/addon/vrmod-x64?ref=${gvrmod_sha}"
+          )"
+
+          submodule_type="$(jq -r '.type // empty' <<< "$submodule_json")"
+          vrmod_x64_sha="$(jq -r '.sha // empty' <<< "$submodule_json")"
+
+          if [[ "$submodule_type" != "submodule" ]]; then
+            echo "::error::gVRMod addon/vrmod-x64 is not a git submodule"
+            exit 1
+          fi
+
+          if [[ ! "$vrmod_x64_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve gVRMod's vrmod-x64 gitlink"
+            exit 1
+          fi
+
+          verified_vrmod_x64_sha="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${VRMOD_X64_REPOSITORY}/commits/${vrmod_x64_sha}" \
+              --jq '.sha'
+          )"
+
+          if [[ "$verified_vrmod_x64_sha" != "$vrmod_x64_sha" ]]; then
+            echo "::error::The vrmod-x64 gitlink commit could not be verified"
+            exit 1
+          fi
+
+          {
+            echo "gvrmod_sha=$gvrmod_sha"
+            echo "openvr_module_sha=$openvr_module_sha"
+            echo "vrmod_x64_sha=$vrmod_x64_sha"
+            echo "openvr_sdk_sha=$openvr_sdk_sha"
+            echo "openxr_sdk_sha=$openxr_sdk_sha"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "$GVRMOD_REPOSITORY@$GVRMOD_REF -> $gvrmod_sha"
+          echo "$OPENVR_MODULE_REPOSITORY@$OPENVR_MODULE_REF -> $openvr_module_sha"
+          echo "$VRMOD_X64_REPOSITORY@gVRMod-gitlink -> $vrmod_x64_sha"
+          echo "$OPENVR_SDK_REPOSITORY@$OPENVR_SDK_REF -> $openvr_sdk_sha"
+          echo "$OPENXR_SDK_REPOSITORY@$OPENXR_SDK_REF -> $openxr_sdk_sha"
 
   linux:
     name: Linux x86-64
@@ -117,7 +163,7 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      - name: Checkout vrmod-x64 addon
+      - name: Checkout gVRMod-compatible vrmod-x64
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ env.VRMOD_X64_REPOSITORY }}
@@ -158,18 +204,29 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Verify source layout
+      - name: Verify source layout and version compatibility
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f src/gvrmod/CMakeLists.txt
-          test -f src/gvrmod/addon/vrmod-x64/addon.json
-          test -f src/openvr-module/src/vrmod.cpp
-          test -f src/openvr-module/deps/openvr/openvr.h
-          test -f src/openvr-sdk/bin/linux64/libopenvr_api.so
-          test -f src/openxr-sdk/CMakeLists.txt
-          test -f src/openxr-sdk/include/openxr/openxr.h
+          required=(
+            src/gvrmod/CMakeLists.txt
+            src/gvrmod/addon/vrmod-x64/addon.json
+            src/gvrmod/addon/vrmod-x64/lua/vrmod/utils/sh_math.lua
+            src/gvrmod/addon/vrmod-x64/lua/vrmod/utils/sh_desktop_mirror_law.lua
+            src/openvr-module/src/vrmod.cpp
+            src/openvr-module/deps/openvr/openvr.h
+            src/openvr-sdk/bin/linux64/libopenvr_api.so
+            src/openxr-sdk/CMakeLists.txt
+            src/openxr-sdk/include/openxr/openxr.h
+          )
+
+          for path in "${required[@]}"; do
+            if [[ ! -f "$path" ]]; then
+              echo "::error file=${path}::Required source file is missing"
+              exit 1
+            fi
+          done
 
           header="src/openvr-module/deps/openvr/openvr.h"
 
@@ -177,13 +234,29 @@ jobs:
           grep -q "EVRSummaryType" "$header"
           grep -q "GetSkeletalSummaryData" "$header"
 
+          actual_addon_sha="$(
+            git -C src/gvrmod/addon/vrmod-x64 rev-parse HEAD
+          )"
+
+          expected_addon_sha="${{ needs.resolve.outputs.vrmod_x64_sha }}"
+
+          if [[ "$actual_addon_sha" != "$expected_addon_sha" ]]; then
+            echo "::error::vrmod-x64 checkout does not match gVRMod's gitlink"
+            echo "Expected: $expected_addon_sha"
+            echo "Actual:   $actual_addon_sha"
+            exit 1
+          fi
+
       - name: Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+
+          sudo apt-get install \
+            --yes \
+            --no-install-recommends \
             build-essential \
             cmake \
             ninja-build \
@@ -260,8 +333,8 @@ jobs:
 
           test_binary="$(realpath "$test_binary")"
 
-          # The upstream tests use POSIX /tmp paths, so their authoritative
-          # execution environment is Linux.
+          # These upstream tests use POSIX /tmp paths and therefore run
+          # authoritatively in the Linux job.
           (
             cd "$source_dir"
             "$test_binary"
@@ -269,10 +342,15 @@ jobs:
 
       - name: Run contract, Lua and scenario tests
         shell: bash
+        env:
+          GVRMOD_ROOT: ${{ github.workspace }}/src/gvrmod/
         run: |
           set -euo pipefail
 
           cd "$GITHUB_WORKSPACE/src/gvrmod"
+
+          test -f \
+            addon/vrmod-x64/lua/vrmod/utils/sh_desktop_mirror_law.lua
 
           python3 scripts/gen_contracts.py
           python3 scripts/check_test_contracts.py
@@ -291,9 +369,8 @@ jobs:
 
           mkdir -p "$output"
 
-          # Use the header vendored by vrmod-module-master. It contains the
-          # IVRInput API expected by that repository. Valve's checkout is
-          # used only for the ABI-compatible runtime library.
+          # The module's own vendored header matches its source API.
+          # Valve's repository supplies only the runtime library.
           g++ \
             -std=c++17 \
             -fPIC \
@@ -349,8 +426,6 @@ jobs:
             exit 1
           fi
 
-          # Store real files instead of symlinks so the ZIP behaves
-          # consistently on Windows and Linux extraction tools.
           cp -L "$loader" "$output/libopenxr_loader.so"
           cp -L "$loader" "$output/libopenxr_loader.so.1"
 
@@ -377,7 +452,7 @@ jobs:
             )"
 
             if [[ -z "$source" ]]; then
-              echo "::error::Missing gVRMod module: ${name}"
+              echo "::error::Missing gVRMod module: $name"
               exit 1
             fi
 
@@ -517,6 +592,7 @@ jobs:
           $required = @(
             "src\gvrmod\CMakeLists.txt",
             "src\openvr-module\src\vrmod.cpp",
+            "src\openvr-module\deps\gmod\LuaBase.h",
             "src\openvr-module\deps\openvr\openvr.h",
             "src\openvr-sdk\lib\win64\openvr_api.lib",
             "src\openvr-sdk\bin\win64\openvr_api.dll",
@@ -537,7 +613,12 @@ jobs:
             "EVRSummaryType",
             "GetSkeletalSummaryData"
           )) {
-            if (-not (Select-String -LiteralPath $header -Pattern $symbol -Quiet)) {
+            if (-not (
+              Select-String `
+                -LiteralPath $header `
+                -Pattern $symbol `
+                -Quiet
+            )) {
               throw "Vendored OpenVR header is missing: $symbol"
             }
           }
@@ -550,7 +631,6 @@ jobs:
           $gvrmod = Join-Path $env:GITHUB_WORKSPACE "src\gvrmod"
           $module = Join-Path $env:GITHUB_WORKSPACE "src\openvr-module"
           $openxr = Join-Path $env:GITHUB_WORKSPACE "src\openxr-sdk"
-
           $deps = Join-Path $gvrmod "deps"
 
           if (Test-Path -LiteralPath $deps) {
@@ -574,17 +654,20 @@ jobs:
             -Recurse `
             -Force
 
-          # gVRMod's Windows path declares several GLuint variables without
-          # including an OpenGL header. Force-include this build-only shim.
-          # No OpenVR/OpenXR/SteamVR source file is patched.
-          $shim = Join-Path $env:RUNNER_TEMP "gvrmod_windows_types.h"
+          # gVRMod's Windows path declares GLuint variables without including
+          # an OpenGL header. This is a build-only forced-include header.
+          $shim = Join-Path `
+            $env:RUNNER_TEMP `
+            "gvrmod_windows_types.h"
 
           @'
           #pragma once
           #ifdef _WIN32
           using GLuint = unsigned int;
           #endif
-          '@ | Set-Content -LiteralPath $shim -Encoding ascii
+          '@ | Set-Content `
+            -LiteralPath $shim `
+            -Encoding ascii
 
           if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {
             throw "Failed to create the Windows type shim"
@@ -599,9 +682,9 @@ jobs:
           $build = Join-Path $env:GITHUB_WORKSPACE "build\gvrmod-windows"
           $shim = Join-Path $env:RUNNER_TEMP "gvrmod_windows_types.h"
 
-          # The upstream C++ tests use hard-coded /tmp paths. They are run
-          # as a mandatory gate in the Linux job. Windows still has strict
-          # compilation and PE validation below.
+          # Windows execution of the upstream C++ tests is disabled because
+          # they use hard-coded POSIX /tmp paths. The same suite remains
+          # mandatory in the Linux job.
           $env:CL = "/FI`"$shim`""
 
           $configure = @(
@@ -631,20 +714,29 @@ jobs:
             throw "gVRMod Windows build failed: $LASTEXITCODE"
           }
 
-      - name: Initialize MSVC environment
+      - name: Build OpenVR Garry's Mod module
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
+          # cl.exe alone is not sufficient. INCLUDE, LIB and PATH must be
+          # initialized and used inside this same Actions step.
           $vswhere = Join-Path `
             ${env:ProgramFiles(x86)} `
             "Microsoft Visual Studio\Installer\vswhere.exe"
 
-          $vsInstall = & $vswhere `
-            -latest `
-            -products "*" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe was not found"
+          }
+
+          $vsInstall = (
+            & $vswhere `
+              -latest `
+              -products "*" `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath |
+            Select-Object -First 1
+          )
 
           if (-not $vsInstall) {
             throw "Visual Studio C++ installation was not found"
@@ -654,6 +746,10 @@ jobs:
             $vsInstall `
             "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
 
+          if (-not (Test-Path -LiteralPath $devShell -PathType Leaf)) {
+            throw "Visual Studio DevShell module was not found: $devShell"
+          }
+
           Import-Module $devShell
 
           Enter-VsDevShell `
@@ -661,13 +757,18 @@ jobs:
             -SkipAutomaticLocation `
             -DevCmdArguments "-arch=x64 -host_arch=x64"
 
-          $cl = Get-Command cl.exe -ErrorAction Stop
-          "MSVC_PATH=$($cl.Source)" >> $env:GITHUB_ENV
+          if (-not $env:INCLUDE) {
+            throw "MSVC INCLUDE environment was not initialized"
+          }
 
-      - name: Build OpenVR Garry's Mod module
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+          if (-not $env:LIB) {
+            throw "MSVC LIB environment was not initialized"
+          }
+
+          $cl = Get-Command cl.exe -ErrorAction Stop
+
+          Write-Host "Compiler: $($cl.Source)"
+          Write-Host "INCLUDE: $env:INCLUDE"
 
           $source = Join-Path `
             $env:GITHUB_WORKSPACE `
@@ -693,8 +794,15 @@ jobs:
             $outputDirectory `
             "gmcl_vrmod_win64.dll"
 
-          New-Item -ItemType Directory -Path $work -Force | Out-Null
-          New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path $work `
+            -Force | Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Path $outputDirectory `
+            -Force | Out-Null
 
           Push-Location $work
 
@@ -719,7 +827,7 @@ jobs:
               "/OUT:$output"
             )
 
-            & $env:MSVC_PATH @arguments
+            & $cl.Source @arguments
 
             if ($LASTEXITCODE -ne 0) {
               throw "OpenVR module build failed: $LASTEXITCODE"
@@ -777,7 +885,10 @@ jobs:
             throw "openxr_loader.dll was not generated"
           }
 
-          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path $output `
+            -Force | Out-Null
 
           Copy-Item `
             -LiteralPath $loader.FullName `
@@ -794,7 +905,10 @@ jobs:
             $env:GITHUB_WORKSPACE `
             "src\gvrmod\install\GarrysMod\garrysmod\lua\bin"
 
-          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path $output `
+            -Force | Out-Null
 
           $gvrmodModule = Get-ChildItem `
             -LiteralPath $installBin `
@@ -809,7 +923,9 @@ jobs:
 
           Copy-Item `
             -LiteralPath $gvrmodModule.FullName `
-            -Destination (Join-Path $output "gmcl_vrmod_xr_win64.dll") `
+            -Destination (
+              Join-Path $output "gmcl_vrmod_xr_win64.dll"
+            ) `
             -Force
 
           Copy-Item `
@@ -818,7 +934,9 @@ jobs:
                 $env:GITHUB_WORKSPACE `
                 "src\openvr-sdk\bin\win64\openvr_api.dll"
             ) `
-            -Destination (Join-Path $output "openvr_api.dll") `
+            -Destination (
+              Join-Path $output "openvr_api.dll"
+            ) `
             -Force
 
       - name: Validate Windows PE artifacts
@@ -857,7 +975,10 @@ jobs:
               throw "$Path does not have a valid PE signature"
             }
 
-            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            $machine = [BitConverter]::ToUInt16(
+              $bytes,
+              $peOffset + 4
+            )
 
             if ($machine -ne 0x8664) {
               throw (
@@ -916,7 +1037,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Checkout vrmod-x64 addon
+      - name: Checkout gVRMod-compatible vrmod-x64
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ env.VRMOD_X64_REPOSITORY }}
@@ -947,7 +1068,23 @@ jobs:
           addon_target="$stage/garrysmod/addons/vrmod-x64"
           lua_bin="$stage/garrysmod/lua/bin"
 
+          test -f "$addon_source/addon.json"
+          test -f \
+            "$addon_source/lua/vrmod/utils/sh_desktop_mirror_law.lua"
+
+          actual_addon_sha="$(
+            git -C "$addon_source" rev-parse HEAD
+          )"
+
+          expected_addon_sha="${{ needs.resolve.outputs.vrmod_x64_sha }}"
+
+          if [[ "$actual_addon_sha" != "$expected_addon_sha" ]]; then
+            echo "::error::Packaging checkout does not match gVRMod's gitlink"
+            exit 1
+          fi
+
           rm -rf "$stage"
+
           mkdir -p \
             "$addon_target" \
             "$lua_bin" \
@@ -955,13 +1092,14 @@ jobs:
             "$stage/bin/linux64" \
             "$stage/LICENSES"
 
-          install -m 0644 \
+          install \
+            -m 0644 \
             "$addon_source/addon.json" \
             "$addon_target/addon.json"
 
           for directory in lua materials models; do
             if [[ ! -d "$addon_source/$directory" ]]; then
-              echo "::error::Missing addon directory: ${directory}"
+              echo "::error::Missing addon directory: $directory"
               exit 1
             fi
 
@@ -970,11 +1108,15 @@ jobs:
               "$addon_target/$directory"
           done
 
-          # Do not allow stale native binaries from the addon repository to
-          # replace the binaries built by this workflow.
+          # Remove stale prebuilt native modules, if the addon repository ever
+          # gains them. Only binaries produced by this workflow are packaged.
           find "$addon_target" \
             -type f \
-            \( -iname '*.dll' -o -iname '*.so' -o -iname '*.so.*' \) \
+            \( \
+              -iname '*.dll' \
+              -o -iname '*.so' \
+              -o -iname '*.so.*' \
+            \) \
             -delete
 
           windows_files=(
@@ -1011,14 +1153,14 @@ jobs:
             install -m 0644 "$source" "$stage/bin/linux64/$name"
           done
 
-          if [[ ! -d "$GITHUB_WORKSPACE/artifacts/linux/licenses" ]]; then
+          licenses="$GITHUB_WORKSPACE/artifacts/linux/licenses"
+
+          if [[ ! -d "$licenses" ]]; then
             echo "::error::License bundle is missing"
             exit 1
           fi
 
-          cp -a \
-            "$GITHUB_WORKSPACE/artifacts/linux/licenses/." \
-            "$stage/LICENSES/"
+          cp -a "$licenses/." "$stage/LICENSES/"
 
       - name: Write build manifest
         shell: bash
@@ -1031,6 +1173,7 @@ jobs:
             echo "gVRMod=${{ needs.resolve.outputs.gvrmod_sha }}"
             echo "vrmod-module-master=${{ needs.resolve.outputs.openvr_module_sha }}"
             echo "vrmod-x64=${{ needs.resolve.outputs.vrmod_x64_sha }}"
+            echo "vrmod-x64-source=gVRMod addon/vrmod-x64 gitlink"
             echo "OpenVR=${{ needs.resolve.outputs.openvr_sdk_sha }}"
             echo "OpenXR-SDK=${{ needs.resolve.outputs.openxr_sdk_sha }}"
             echo "builder=${GITHUB_REPOSITORY}@${GITHUB_SHA}"
@@ -1047,6 +1190,7 @@ jobs:
 
           required=(
             garrysmod/addons/vrmod-x64/addon.json
+            garrysmod/addons/vrmod-x64/lua/vrmod/utils/sh_desktop_mirror_law.lua
             garrysmod/lua/bin/gmcl_vrmod_xr_win64.dll
             garrysmod/lua/bin/gmcl_vrmod_win64.dll
             garrysmod/lua/bin/openvr_api.dll
@@ -1072,7 +1216,7 @@ jobs:
 
           for relative_path in "${required[@]}"; do
             if [[ ! -s "$stage/$relative_path" ]]; then
-              echo "::error::Missing or empty package file: ${relative_path}"
+              echo "::error::Missing or empty package file: $relative_path"
               exit 1
             fi
           done
@@ -1136,6 +1280,7 @@ jobs:
 
           required = {
               "garrysmod/addons/vrmod-x64/addon.json",
+              "garrysmod/addons/vrmod-x64/lua/vrmod/utils/sh_desktop_mirror_law.lua",
               "garrysmod/lua/bin/gmcl_vrmod_xr_win64.dll",
               "garrysmod/lua/bin/gmcl_vrmod_win64.dll",
               "garrysmod/lua/bin/openvr_api.dll",
@@ -1177,7 +1322,9 @@ jobs:
                       raise SystemExit(f"Unsafe ZIP path: {name}")
 
                   if ".." in path.parts:
-                      raise SystemExit(f"Unsafe ZIP traversal path: {name}")
+                      raise SystemExit(
+                          f"Unsafe ZIP traversal path: {name}"
+                      )
 
                   if not (
                       name.startswith("garrysmod/")
@@ -1185,10 +1332,14 @@ jobs:
                       or name.startswith("LICENSES/")
                       or name == "BUILD-MANIFEST.txt"
                   ):
-                      raise SystemExit(f"Unexpected top-level ZIP path: {name}")
+                      raise SystemExit(
+                          f"Unexpected top-level ZIP path: {name}"
+                      )
 
                   if name.lower().endswith(forbidden_suffixes):
-                      raise SystemExit(f"Forbidden packaged file: {name}")
+                      raise SystemExit(
+                          f"Forbidden packaged file: {name}"
+                      )
 
               missing = sorted(required - files)
 
