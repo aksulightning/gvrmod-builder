@@ -21,7 +21,7 @@ env:
   OPENVR_MODULE_REF: main
 
   OPENVR_SDK_REPOSITORY: ValveSoftware/openvr
-  OPENVR_SDK_SHA: 823135df1783009cb468d0fc4190816254f7687d
+  OPENVR_SDK_REF: master
 
   OPENXR_SDK_REPOSITORY: KhronosGroup/OpenXR-SDK
   OPENXR_SDK_REF: release-1.1.60
@@ -61,7 +61,7 @@ jobs:
 
           openvr_sdk_sha="$(
             gh api \
-              "repos/${OPENVR_SDK_REPOSITORY}/commits/${OPENVR_SDK_SHA}" \
+              "repos/${OPENVR_SDK_REPOSITORY}/commits/${OPENVR_SDK_REF}" \
               --jq '.sha'
           )"
 
@@ -126,7 +126,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out official OpenVR SDK
+      - name: Check out required OpenVR SDK files
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ValveSoftware/openvr
@@ -134,6 +134,10 @@ jobs:
           path: src/openvr-sdk
           fetch-depth: 1
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            bin/linux64/libopenvr_api.so
+            LICENSE
 
       - name: Check out official OpenXR SDK
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -144,16 +148,31 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify source layout
+      - name: Verify source layout and OpenVR API compatibility
         shell: bash
         run: |
           set -euo pipefail
 
+          openvr_header="$PWD/src/openvr-module/deps/openvr/openvr.h"
+
           test -f "$PWD/src/gvrmod/CMakeLists.txt"
           test -f "$PWD/src/gvrmod/addon/vrmod-x64/addon.json"
           test -f "$PWD/src/openvr-module/src/vrmod.cpp"
-          test -f "$PWD/src/openvr-sdk/headers/openvr.h"
+          test -f "$openvr_header"
+          test -f "$PWD/src/openvr-sdk/bin/linux64/libopenvr_api.so"
           test -f "$PWD/src/openxr-sdk/include/openxr/openxr.h"
+
+          grep -q \
+            'GetPoseActionDataRelativeToNow' \
+            "$openvr_header"
+
+          grep -q \
+            'enum EVRSummaryType' \
+            "$openvr_header"
+
+          grep -q \
+            'GetSkeletalSummaryData' \
+            "$openvr_header"
 
       - name: Install Linux build dependencies
         shell: bash
@@ -171,7 +190,7 @@ jobs:
             luajit \
             ninja-build
 
-      - name: Prepare native module headers
+      - name: Prepare gVRMod headers
         shell: bash
         run: |
           set -euo pipefail
@@ -180,8 +199,7 @@ jobs:
 
           install -d \
             "$gvrmod/deps/gmod" \
-            "$gvrmod/deps/openxr" \
-            "$PWD/build-deps/openvr"
+            "$gvrmod/deps/openxr"
 
           cp -a \
             "$PWD/src/openvr-module/deps/gmod/." \
@@ -191,13 +209,8 @@ jobs:
             "$PWD/src/openxr-sdk/include/openxr" \
             "$gvrmod/deps/openxr/"
 
-          install -m 0644 \
-            "$PWD/src/openvr-sdk/headers/openvr.h" \
-            "$PWD/build-deps/openvr/openvr.h"
-
           test -f "$gvrmod/deps/gmod/Interface.h"
           test -f "$gvrmod/deps/openxr/openxr/openxr.h"
-          test -f "$PWD/build-deps/openvr/openvr.h"
 
       - name: Build gVRMod OpenXR and Quest modules
         shell: bash
@@ -251,22 +264,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          out="$PWD/dist-linux/runtime"
-          mkdir -p "$out"
+          runtime="$PWD/dist-linux/runtime"
+          openvr_module="$PWD/src/openvr-module"
+          openvr_sdk="$PWD/src/openvr-sdk"
 
+          mkdir -p "$runtime"
+
+          # Use the header vendored by vrmod-module-master. It matches the
+          # current module source and contains IVRInput's required methods.
           g++ \
             -fPIC \
             -shared \
             -m64 \
             -O3 \
-            -I "$PWD/build-deps" \
-            -I "$PWD/src/openvr-module/deps" \
-            "$PWD/src/openvr-module/src/vrmod.cpp" \
-            -L "$PWD/src/openvr-sdk/bin/linux64" \
+            -I "$openvr_module/deps" \
+            "$openvr_module/src/vrmod.cpp" \
+            -L "$openvr_sdk/bin/linux64" \
             -Wl,-rpath,'$ORIGIN' \
             -l:libopenvr_api.so \
             -ldl \
-            -o "$out/gmcl_vrmod_linux64.dll"
+            -o "$runtime/gmcl_vrmod_linux64.dll"
 
       - name: Build official OpenXR loader
         shell: bash
@@ -312,7 +329,7 @@ jobs:
             "$loader" \
             "$PWD/dist-linux/runtime/libopenxr_loader.so.1"
 
-          # Use a real file instead of a symlink for cross-platform ZIP tools.
+          # Store a real file instead of a symlink for cross-platform ZIP tools.
           install -m 0755 \
             "$loader" \
             "$PWD/dist-linux/runtime/libopenxr_loader.so"
@@ -463,7 +480,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out official OpenVR SDK
+      - name: Check out required OpenVR SDK files
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ValveSoftware/openvr
@@ -471,6 +488,11 @@ jobs:
           path: src/openvr-sdk
           fetch-depth: 1
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            lib/win64/openvr_api.lib
+            bin/win64/openvr_api.dll
+            LICENSE
 
       - name: Check out official OpenXR SDK
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -481,17 +503,24 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify source layout
+      - name: Verify source layout and OpenVR API compatibility
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
+          $root = (Get-Location).Path
+          $openvrHeader = (
+            "$root\src\openvr-module\deps\openvr\openvr.h"
+          )
+
           $required = @(
-            "src\gvrmod\CMakeLists.txt"
-            "src\gvrmod\addon\vrmod-x64\addon.json"
-            "src\openvr-module\src\vrmod.cpp"
-            "src\openvr-sdk\headers\openvr.h"
-            "src\openxr-sdk\include\openxr\openxr.h"
+            "$root\src\gvrmod\CMakeLists.txt"
+            "$root\src\gvrmod\addon\vrmod-x64\addon.json"
+            "$root\src\openvr-module\src\vrmod.cpp"
+            $openvrHeader
+            "$root\src\openvr-sdk\lib\win64\openvr_api.lib"
+            "$root\src\openvr-sdk\bin\win64\openvr_api.dll"
+            "$root\src\openxr-sdk\include\openxr\openxr.h"
           )
 
           foreach ($path in $required) {
@@ -500,7 +529,30 @@ jobs:
             }
           }
 
-      - name: Prepare native module headers
+          $apiChecks = @(
+            "GetPoseActionDataRelativeToNow"
+            "enum EVRSummaryType"
+            "GetSkeletalSummaryData"
+          )
+
+          foreach ($pattern in $apiChecks) {
+            if (
+              -not (
+                Select-String `
+                  -Path $openvrHeader `
+                  -Pattern $pattern `
+                  -SimpleMatch `
+                  -Quiet
+              )
+            ) {
+              throw (
+                "OpenVR header is incompatible with vrmod.cpp: " +
+                "missing $pattern"
+              )
+            }
+          }
+
+      - name: Prepare gVRMod headers and Windows type shim
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -510,7 +562,7 @@ jobs:
           $directories = @(
             "$root\src\gvrmod\deps\gmod"
             "$root\src\gvrmod\deps\openxr"
-            "$root\build-deps\openvr"
+            "$root\build-shims"
           )
 
           foreach ($directory in $directories) {
@@ -532,11 +584,6 @@ jobs:
             -Recurse `
             -Force
 
-          Copy-Item `
-            "$root\src\openvr-sdk\headers\openvr.h" `
-            "$root\build-deps\openvr\openvr.h" `
-            -Force
-
           if (-not (Test-Path "$root\src\gvrmod\deps\gmod\Interface.h")) {
             throw "GMod module headers are missing"
           }
@@ -550,6 +597,25 @@ jobs:
             throw "OpenXR headers are missing"
           }
 
+          # lua_interface.cpp declares shared texture IDs as GLuint on every
+          # platform, while the Windows source path does not include GL/gl.h.
+          # This generated forced-include supplies only the missing type.
+          # No source repository is modified and this file is not packaged.
+          $shim = "$root\build-shims\gvrmod_windows_types.hpp"
+
+          @(
+            "#pragma once"
+            "#ifdef _WIN32"
+            "using GLuint = unsigned int;"
+            "#endif"
+          ) | Set-Content `
+            -Path $shim `
+            -Encoding ascii
+
+          if (-not (Test-Path $shim)) {
+            throw "Windows build type shim was not created"
+          }
+
       - name: Build and test gVRMod OpenXR module
         shell: pwsh
         run: |
@@ -559,6 +625,19 @@ jobs:
           $root = (Get-Location).Path
           $source = "$root\src\gvrmod"
           $build = "$root\build\gvrmod-windows"
+          $shim = "$root\build-shims\gvrmod_windows_types.hpp"
+
+          if (-not (Test-Path "$source\CMakeLists.txt")) {
+            throw "gVRMod CMakeLists.txt is missing: $source"
+          }
+
+          if (-not (Test-Path $shim)) {
+            throw "Windows type shim is missing: $shim"
+          }
+
+          # MSVC reads additional flags from the CL environment variable.
+          # The value applies only to this step.
+          $env:CL = "/FI`"$shim`""
 
           cmake `
             -S $source `
@@ -626,6 +705,9 @@ jobs:
             -Path $outDir `
             -Force | Out-Null
 
+          # Use only vrmod-module-master/deps as the include root. This selects
+          # the module's compatible deps/openvr/openvr.h instead of an older
+          # or unrelated SDK header.
           $compilerArgs = @(
             "/nologo"
             "/LD"
@@ -638,7 +720,6 @@ jobs:
             "/D_CRT_SECURE_NO_WARNINGS"
             "/DNOMINMAX"
             "/DWIN32_LEAN_AND_MEAN"
-            "/I$root\build-deps"
             "/I$root\src\openvr-module\deps"
             "$root\src\openvr-module\src\vrmod.cpp"
             "/Fo$outDir\vrmod.obj"
@@ -900,8 +981,7 @@ jobs:
             "$package_root/bin/win64" \
             "$package_root/licenses"
 
-          # Copy only runtime content from vrmod-x64.
-          # Repository scripts, state files and development documents are excluded.
+          # Copy only the Lua addon's runtime files.
           for item in addon.json lua materials models; do
             source_path="$gvrmod/addon/vrmod-x64/$item"
 
@@ -913,7 +993,7 @@ jobs:
             cp -a "$source_path" "$addon_dir/"
           done
 
-          # Put every platform module and loader next to the Lua modules.
+          # Keep platform modules and loaders next to each other.
           for file in \
             "$PWD"/artifacts/linux/runtime/* \
             "$PWD"/artifacts/windows/runtime/*
@@ -923,7 +1003,7 @@ jobs:
               "$lua_bin/$(basename "$file")"
           done
 
-          # Compatibility copies for Garry's Mod engine library search paths.
+          # Garry's Mod engine compatibility paths.
           install -m 0755 \
             "$PWD/artifacts/linux/runtime/libopenvr_api.so" \
             "$package_root/bin/libopenvr_api.so"
@@ -1168,8 +1248,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Keep the previous release available until the replacement ZIP
-          # has been built, validated and uploaded successfully.
+          # Keep the old release until the new ZIP has passed every build and
+          # validation step.
           if gh release view \
             nightly \
             --repo "$GITHUB_REPOSITORY" \
@@ -1182,7 +1262,7 @@ jobs:
               --yes
           fi
 
-          # Remove a possible orphaned tag from an interrupted older run.
+          # Remove an orphaned tag left by an interrupted previous run.
           if gh api \
             "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" \
             >/dev/null 2>&1
