@@ -96,9 +96,8 @@ jobs:
               "$OPENXR_SDK_REF"
           )"
 
-          # vrmod-x64 must match the exact gitlink recorded by gVRMod.
-          # Its independent main branch can be older or otherwise incompatible
-          # with gVRMod's tests and native module.
+          # Resolve vrmod-x64 from gVRMod's exact gitlink. The independent
+          # vrmod-x64 main branch is not guaranteed to match gVRMod's tests.
           submodule_json="$(
             gh api \
               -H "Accept: application/vnd.github+json" \
@@ -333,8 +332,6 @@ jobs:
 
           test_binary="$(realpath "$test_binary")"
 
-          # These upstream tests use POSIX /tmp paths and therefore run
-          # authoritatively in the Linux job.
           (
             cd "$source_dir"
             "$test_binary"
@@ -369,8 +366,6 @@ jobs:
 
           mkdir -p "$output"
 
-          # The module's own vendored header matches its source API.
-          # Valve's repository supplies only the runtime library.
           g++ \
             -std=c++17 \
             -fPIC \
@@ -654,8 +649,6 @@ jobs:
             -Recurse `
             -Force
 
-          # gVRMod's Windows path declares GLuint variables without including
-          # an OpenGL header. This is a build-only forced-include header.
           $shim = Join-Path `
             $env:RUNNER_TEMP `
             "gvrmod_windows_types.h"
@@ -682,9 +675,6 @@ jobs:
           $build = Join-Path $env:GITHUB_WORKSPACE "build\gvrmod-windows"
           $shim = Join-Path $env:RUNNER_TEMP "gvrmod_windows_types.h"
 
-          # Windows execution of the upstream C++ tests is disabled because
-          # they use hard-coded POSIX /tmp paths. The same suite remains
-          # mandatory in the Linux job.
           $env:CL = "/FI`"$shim`""
 
           $configure = @(
@@ -719,8 +709,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # cl.exe alone is not sufficient. INCLUDE, LIB and PATH must be
-          # initialized and used inside this same Actions step.
+          # MSVC setup and compilation must happen in this same step so
+          # INCLUDE, LIB and PATH remain available.
           $vswhere = Join-Path `
             ${env:ProgramFiles(x86)} `
             "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -804,6 +794,25 @@ jobs:
             -Path $outputDirectory `
             -Force | Out-Null
 
+          # vrmod.cpp uses OpenGL 1.1 types and glIsTexture in its Windows
+          # branch, but does not include GL/gl.h. Supply the system OpenGL
+          # declarations with a build-only forced-include header.
+          $glShim = Join-Path `
+            $env:RUNNER_TEMP `
+            "openvr_windows_gl.h"
+
+          @'
+          #pragma once
+          #include <Windows.h>
+          #include <GL/gl.h>
+          '@ | Set-Content `
+            -LiteralPath $glShim `
+            -Encoding ascii
+
+          if (-not (Test-Path -LiteralPath $glShim -PathType Leaf)) {
+            throw "Failed to create the OpenVR Windows GL shim"
+          }
+
           Push-Location $work
 
           try {
@@ -815,6 +824,7 @@ jobs:
               "/W3",
               "/wd4996",
               "/I$deps",
+              "/FI$glShim",
               $source,
               "/link",
               "/INCREMENTAL:NO",
@@ -822,6 +832,7 @@ jobs:
               "d3d11.lib",
               "user32.lib",
               "shell32.lib",
+              "opengl32.lib",
               "/LIBPATH:$openvrLib",
               "openvr_api.lib",
               "/OUT:$output"
@@ -1108,8 +1119,6 @@ jobs:
               "$addon_target/$directory"
           done
 
-          # Remove stale prebuilt native modules, if the addon repository ever
-          # gains them. Only binaries produced by this workflow are packaged.
           find "$addon_target" \
             -type f \
             \( \
