@@ -13,7 +13,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Force every compatible JavaScript action to use the Node.js 24 runtime.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
   GVRMOD_REPOSITORY: Abyss-c0re/gVRMod
@@ -30,7 +29,7 @@ env:
 
 jobs:
   resolve:
-    name: Resolve immutable source revisions
+    name: Resolve immutable revisions
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -43,18 +42,23 @@ jobs:
 
     steps:
       - name: Set up Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6, Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           check-latest: false
           package-manager-cache: false
 
-      - name: Verify Node.js 24
+      - name: Verify Node.js
         shell: bash
         run: |
           set -euo pipefail
+
           node --version
-          node -e "if (Number(process.versions.node.split('.')[0]) !== 24) process.exit(1)"
+          node -e "
+            if (Number(process.versions.node.split('.')[0]) !== 24) {
+              process.exit(1);
+            }
+          "
 
       - name: Resolve source commits
         id: resolve
@@ -69,7 +73,11 @@ jobs:
             local ref="$2"
             local sha
 
-            sha="$(gh api "repos/${repository}/commits/${ref}" --jq '.sha')"
+            sha="$(
+              gh api \
+                "repos/${repository}/commits/${ref}" \
+                --jq '.sha'
+            )"
 
             if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
               echo "::error::Could not resolve ${repository}@${ref}"
@@ -79,18 +87,29 @@ jobs:
             printf '%s\n' "$sha"
           }
 
-          gvrmod_sha="$(resolve_sha "$GVRMOD_REPOSITORY" main)"
-          openvr_module_sha="$(resolve_sha "$OPENVR_MODULE_REPOSITORY" main)"
-          openvr_sha="$(resolve_sha "$OPENVR_REPOSITORY" "$OPENVR_REF")"
-          openxr_sdk_sha="$(resolve_sha "$OPENXR_SDK_REPOSITORY" "$OPENXR_SDK_REF")"
+          gvrmod_sha="$(
+            resolve_sha "$GVRMOD_REPOSITORY" main
+          )"
+
+          openvr_module_sha="$(
+            resolve_sha "$OPENVR_MODULE_REPOSITORY" main
+          )"
+
+          openvr_sha="$(
+            resolve_sha "$OPENVR_REPOSITORY" "$OPENVR_REF"
+          )"
+
+          openxr_sdk_sha="$(
+            resolve_sha "$OPENXR_SDK_REPOSITORY" "$OPENXR_SDK_REF"
+          )"
 
           if [[ "$openvr_sha" != "$OPENVR_REF" ]]; then
-            echo "::error::OpenVR commit did not match the pinned revision"
+            echo "::error::OpenVR commit differs from the pinned revision"
             exit 1
           fi
 
           if [[ "$openxr_sdk_sha" != "$OPENXR_SDK_REF" ]]; then
-            echo "::error::OpenXR SDK commit did not match the pinned revision"
+            echo "::error::OpenXR SDK commit differs from the pinned revision"
             exit 1
           fi
 
@@ -124,7 +143,7 @@ jobs:
           )"
 
           if [[ "$resolved_vrmod_x64" != "$vrmod_x64_sha" ]]; then
-            echo "::error::vrmod-x64 gitlink does not identify a valid commit"
+            echo "::error::vrmod-x64 gitlink is not a valid commit"
             exit 1
           fi
 
@@ -147,21 +166,21 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-linux:
-    name: Build and validate Linux modules
+    name: Build Linux modules
     needs: resolve
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
       - name: Set up Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6, Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           check-latest: false
           package-manager-cache: false
 
       - name: Check out gVRMod
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.GVRMOD_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.gvrmod_sha }}
@@ -169,8 +188,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out the exact vrmod-x64 gitlink
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out exact vrmod-x64 gitlink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.VRMOD_X64_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.vrmod_x64_sha }}
@@ -178,8 +197,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out legacy OpenVR module repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out OpenVR module repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENVR_MODULE_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openvr_module_sha }}
@@ -187,8 +206,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out official OpenVR client library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out official OpenVR library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENVR_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openvr_sha }}
@@ -201,7 +220,7 @@ jobs:
             LICENSE
 
       - name: Check out OpenXR SDK
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENXR_SDK_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openxr_sdk_sha }}
@@ -216,7 +235,10 @@ jobs:
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+
+          sudo apt-get install \
+            --yes \
+            --no-install-recommends \
             build-essential \
             binutils \
             cmake \
@@ -233,21 +255,28 @@ jobs:
             unzip \
             zip
 
-      - name: Verify source layout
+      - name: Verify Linux source layout
         shell: bash
         run: |
           set -euo pipefail
 
           test -f src/gvrmod/CMakeLists.txt
           test -f src/gvrmod/addon/vrmod-x64/addon.json
-          test -f src/openvr-module/deps/gmod/Interface.h
-          test -s src/openvr-module/install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll
-          test -s src/openvr-sdk/bin/linux64/libopenvr_api.so
+
+          test -f \
+            src/openvr-module/deps/gmod/Interface.h
+
+          test -s \
+            src/openvr-module/install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll
+
+          test -s \
+            src/openvr-sdk/bin/linux64/libopenvr_api.so
+
           test -f src/openxr-sdk/CMakeLists.txt
           test -f src/openxr-sdk/include/openxr/openxr.h
           test -f src/openxr-sdk/src/external/jsoncpp/LICENSE
 
-      - name: Prepare gVRMod build dependencies
+      - name: Prepare gVRMod dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -268,7 +297,7 @@ jobs:
             src/openxr-sdk/include/openxr/. \
             src/gvrmod/deps/openxr/openxr/
 
-      - name: Build gVRMod OpenXR and Quest modules
+      - name: Build gVRMod Linux modules
         shell: bash
         run: |
           set -euo pipefail
@@ -285,7 +314,7 @@ jobs:
             --build build/gvrmod-linux \
             --parallel 2
 
-      - name: Run gVRMod native tests
+      - name: Run native Linux tests
         shell: bash
         run: |
           set -euo pipefail
@@ -293,7 +322,7 @@ jobs:
           test -x build/gvrmod-linux/vrmod_tests
           ./build/gvrmod-linux/vrmod_tests
 
-      - name: Run Lua contract and scenario tests
+      - name: Run Lua tests
         shell: bash
         working-directory: src/gvrmod
         env:
@@ -306,16 +335,21 @@ jobs:
           lua5.1 tests/lua/run.lua
           lua5.1 tests/scenarios/run.lua
 
-      - name: Build the official dynamic OpenXR loader
+      - name: Build and install OpenXR Linux loader
         shell: bash
         run: |
           set -euo pipefail
+
+          install_prefix="$GITHUB_WORKSPACE/dist/openxr-linux-install"
 
           cmake \
             -S src/openxr-sdk \
             -B build/openxr-linux \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$install_prefix" \
+            -DCMAKE_INSTALL_BINDIR=bin \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DBUILD_LOADER=ON \
             -DDYNAMIC_LOADER=ON \
             -DBUILD_ALL_EXTENSIONS=OFF \
@@ -330,6 +364,19 @@ jobs:
             --build build/openxr-linux \
             --target openxr_loader \
             --parallel 2
+
+          cmake \
+            --install build/openxr-linux \
+            --component Loader
+
+          installed_loader="$install_prefix/lib/libopenxr_loader.so"
+
+          if [[ ! -e "$installed_loader" ]]; then
+            echo "::error::Installed OpenXR Linux loader was not found"
+            exit 1
+          fi
+
+          file "$installed_loader"
 
       - name: Collect Linux binaries and licenses
         shell: bash
@@ -358,29 +405,11 @@ jobs:
               -quit
           )"
 
-          openxr_loader="$(
-            find \
-              build/openxr-linux \
-              -type f \
-              -name 'libopenxr_loader.so.*' \
-              -print \
-              -quit
-          )"
-
-          if [[ -z "$openxr_loader" ]]; then
-            openxr_loader="$(
-              find \
-                build/openxr-linux \
-                -type f \
-                -name 'libopenxr_loader.so' \
-                -print \
-                -quit
-            )"
-          fi
+          openxr_loader="dist/openxr-linux-install/lib/libopenxr_loader.so"
 
           test -n "$xr_module"
           test -n "$quest_module"
-          test -n "$openxr_loader"
+          test -e "$openxr_loader"
 
           install -m 0755 \
             src/openvr-module/install/GarrysMod/garrysmod/lua/bin/gmcl_vrmod_linux64.dll \
@@ -398,6 +427,7 @@ jobs:
             src/openvr-sdk/bin/linux64/libopenvr_api.so \
             dist/linux/bin/libopenvr_api.so
 
+          # install dereferences the SDK symlink and creates regular package files.
           install -m 0755 \
             "$openxr_loader" \
             dist/linux/bin/libopenxr_loader.so
@@ -434,7 +464,7 @@ jobs:
             src/openxr-sdk/LICENSES \
             dist/linux/licenses/OpenXR-SDK/LICENSES
 
-      - name: Validate Linux architecture exports and dependencies
+      - name: Validate Linux binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -447,7 +477,7 @@ jobs:
 
             if [[ "$description" != *"ELF 64-bit LSB"* ]] ||
                [[ "$description" != *"x86-64"* ]]; then
-              echo "::error file=${binary}::Expected an ELF x86-64 shared library: ${description}"
+              echo "::error file=${binary}::Expected ELF x86-64: ${description}"
               return 1
             fi
           }
@@ -527,8 +557,8 @@ jobs:
             find dist/linux/bin -maxdepth 1 -type f -print
           )
 
-      - name: Upload Linux native artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: native-linux
           path: |
@@ -540,21 +570,21 @@ jobs:
           include-hidden-files: false
 
   build-windows:
-    name: Build and validate Windows and Wine modules
+    name: Build Windows and Wine modules
     needs: resolve
     runs-on: windows-2022
     timeout-minutes: 45
 
     steps:
       - name: Set up Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6, Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           check-latest: false
           package-manager-cache: false
 
       - name: Check out gVRMod
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.GVRMOD_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.gvrmod_sha }}
@@ -562,8 +592,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out legacy OpenVR module repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out OpenVR module repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENVR_MODULE_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openvr_module_sha }}
@@ -571,8 +601,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out official OpenVR client library
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out official OpenVR library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENVR_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openvr_sha }}
@@ -585,7 +615,7 @@ jobs:
             LICENSE
 
       - name: Check out OpenXR SDK
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.OPENXR_SDK_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.openxr_sdk_sha }}
@@ -594,7 +624,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Verify source layout
+      - name: Verify Windows source layout
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -615,7 +645,7 @@ jobs:
             }
           }
 
-      - name: Prepare gVRMod dependencies and MSVC build shim
+      - name: Prepare gVRMod dependencies
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -658,7 +688,9 @@ jobs:
             -Path "build" `
             -Force | Out-Null
 
-          $shim = Join-Path $env:GITHUB_WORKSPACE "build/gvrmod-msvc-shim.h"
+          $shim = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "build/gvrmod-msvc-shim.h"
 
           @'
           #pragma once
@@ -674,7 +706,7 @@ jobs:
             -Encoding utf8 `
             -Append
 
-      - name: Build gVRMod OpenXR module
+      - name: Build gVRMod Windows OpenXR module
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -707,15 +739,22 @@ jobs:
 
           Remove-Item Env:CL -ErrorAction SilentlyContinue
 
-      - name: Build the official dynamic OpenXR loader
+      - name: Build and install Windows OpenXR loader
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          $installPrefix = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "dist/openxr-windows-install"
 
           $configure = @(
             "-S", "src/openxr-sdk",
             "-B", "build/openxr-windows",
             "-A", "x64",
+            "-DCMAKE_INSTALL_PREFIX=$installPrefix",
+            "-DCMAKE_INSTALL_BINDIR=bin",
+            "-DCMAKE_INSTALL_LIBDIR=lib",
             "-DBUILD_LOADER=ON",
             "-DDYNAMIC_LOADER=ON",
             "-DBUILD_ALL_EXTENSIONS=OFF",
@@ -724,8 +763,7 @@ jobs:
             "-DBUILD_CONFORMANCE_TESTS=OFF",
             "-DBUILD_SDK_TESTS=OFF",
             "-DBUILD_WITH_SYSTEM_JSONCPP=OFF",
-            "-DINSTALL_SYMBOLS=OFF",
-            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+            "-DINSTALL_SYMBOLS=OFF"
           )
 
           & cmake @configure
@@ -743,6 +781,35 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "OpenXR loader build failed: $LASTEXITCODE"
           }
+
+          # Khronos produces four build-tree copies with Visual Studio:
+          # one target output and three client/test copies. The install
+          # component selects the canonical target deterministically.
+          & cmake `
+            --install build/openxr-windows `
+            --config Release `
+            --component Loader
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenXR loader installation failed: $LASTEXITCODE"
+          }
+
+          $installedLoader = Join-Path `
+            $installPrefix `
+            "bin/openxr_loader.dll"
+
+          if (-not (Test-Path -LiteralPath $installedLoader -PathType Leaf)) {
+            throw "Installed OpenXR loader was not found: $installedLoader"
+          }
+
+          $item = Get-Item -LiteralPath $installedLoader
+
+          if ($item.Length -le 0) {
+            throw "Installed OpenXR loader is empty: $installedLoader"
+          }
+
+          Write-Host "Canonical OpenXR loader: $($item.FullName)"
+          Write-Host "Size: $($item.Length) bytes"
 
       - name: Collect Windows and Wine binaries
         shell: pwsh
@@ -766,16 +833,14 @@ jobs:
             throw "Expected one gmcl_vrmod_xr_win64.dll, found $($xrModules.Count)"
           }
 
-          $openxrLoaders = @(
-            Get-ChildItem `
-              -LiteralPath "build/openxr-windows" `
-              -Recurse `
-              -File `
-              -Filter "openxr_loader.dll"
-          )
+          # Do not search build/openxr-windows recursively. Khronos creates
+          # four valid copies there by design. Use only the installed target.
+          $openxrLoader = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "dist/openxr-windows-install/bin/openxr_loader.dll"
 
-          if ($openxrLoaders.Count -ne 1) {
-            throw "Expected one Release openxr_loader.dll, found $($openxrLoaders.Count)"
+          if (-not (Test-Path -LiteralPath $openxrLoader -PathType Leaf)) {
+            throw "Canonical installed openxr_loader.dll was not found: $openxrLoader"
           }
 
           Copy-Item `
@@ -794,11 +859,28 @@ jobs:
             -Force
 
           Copy-Item `
-            -LiteralPath $openxrLoaders[0].FullName `
+            -LiteralPath $openxrLoader `
             -Destination "dist/windows/bin/openxr_loader.dll" `
             -Force
 
-      - name: Initialize Visual Studio validation tools
+          $expected = @(
+            "dist/windows/bin/gmcl_vrmod_win64.dll",
+            "dist/windows/bin/gmcl_vrmod_xr_win64.dll",
+            "dist/windows/bin/openvr_api.dll",
+            "dist/windows/bin/openxr_loader.dll"
+          )
+
+          foreach ($binary in $expected) {
+            $item = Get-Item -LiteralPath $binary
+
+            if ($item.Length -le 0) {
+              throw "Collected binary is empty: $binary"
+            }
+
+            Write-Host "$binary ($($item.Length) bytes)"
+          }
+
+      - name: Initialize Visual Studio tools
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -817,7 +899,10 @@ jobs:
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath
 
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vsPath)) {
+          if (
+            $LASTEXITCODE -ne 0 -or
+            [string]::IsNullOrWhiteSpace($vsPath)
+          ) {
             throw "Visual Studio C++ installation was not found"
           }
 
@@ -841,7 +926,7 @@ jobs:
             -Encoding utf8 `
             -Append
 
-      - name: Validate PE architecture exports and imports
+      - name: Validate Windows binaries
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -858,7 +943,10 @@ jobs:
             -DevCmdArguments "-arch=x64 -host_arch=x64"
 
           function Assert-PeAmd64 {
-            param([Parameter(Mandatory)][string]$Path)
+            param(
+              [Parameter(Mandatory)]
+              [string]$Path
+            )
 
             $bytes = [System.IO.File]::ReadAllBytes($Path)
 
@@ -872,7 +960,10 @@ jobs:
 
             $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
 
-            if ($peOffset -lt 0 -or ($peOffset + 6) -gt $bytes.Length) {
+            if (
+              $peOffset -lt 0 -or
+              ($peOffset + 6) -gt $bytes.Length
+            ) {
               throw "$Path has an invalid PE header offset"
             }
 
@@ -885,7 +976,10 @@ jobs:
               throw "$Path does not have a valid PE signature"
             }
 
-            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            $machine = [BitConverter]::ToUInt16(
+              $bytes,
+              $peOffset + 4
+            )
 
             if ($machine -ne 0x8664) {
               $value = "{0:X4}" -f $machine
@@ -895,11 +989,17 @@ jobs:
 
           function Get-DumpbinOutput {
             param(
-              [Parameter(Mandatory)][string]$Mode,
-              [Parameter(Mandatory)][string]$Path
+              [Parameter(Mandatory)]
+              [string]$Mode,
+
+              [Parameter(Mandatory)]
+              [string]$Path
             )
 
-            $result = & dumpbin.exe /nologo $Mode $Path 2>&1 | Out-String
+            $result = & dumpbin.exe `
+              /nologo `
+              $Mode `
+              $Path 2>&1 | Out-String
 
             if ($LASTEXITCODE -ne 0) {
               throw "dumpbin $Mode failed for $Path"
@@ -910,11 +1010,17 @@ jobs:
 
           function Assert-Export {
             param(
-              [Parameter(Mandatory)][string]$Path,
-              [Parameter(Mandatory)][string]$Symbol
+              [Parameter(Mandatory)]
+              [string]$Path,
+
+              [Parameter(Mandatory)]
+              [string]$Symbol
             )
 
-            $exports = Get-DumpbinOutput -Mode "/exports" -Path $Path
+            $exports = Get-DumpbinOutput `
+              -Mode "/exports" `
+              -Path $Path
+
             $pattern = "(?m)\b$([Regex]::Escape($Symbol))\b"
 
             if ($exports -notmatch $pattern) {
@@ -936,16 +1042,33 @@ jobs:
             Assert-PeAmd64 -Path $binary
           }
 
-          Assert-Export -Path $legacyModule -Symbol "gmod13_open"
-          Assert-Export -Path $legacyModule -Symbol "gmod13_close"
+          Assert-Export `
+            -Path $legacyModule `
+            -Symbol "gmod13_open"
 
-          Assert-Export -Path $xrModule -Symbol "gmod13_open"
-          Assert-Export -Path $xrModule -Symbol "gmod13_close"
+          Assert-Export `
+            -Path $legacyModule `
+            -Symbol "gmod13_close"
 
-          Assert-Export -Path $openvrLoader -Symbol "VR_InitInternal"
-          Assert-Export -Path $openvrLoader -Symbol "VR_GetGenericInterface"
+          Assert-Export `
+            -Path $xrModule `
+            -Symbol "gmod13_open"
 
-          Assert-Export -Path $openxrLoader -Symbol "xrGetInstanceProcAddr"
+          Assert-Export `
+            -Path $xrModule `
+            -Symbol "gmod13_close"
+
+          Assert-Export `
+            -Path $openvrLoader `
+            -Symbol "VR_InitInternal"
+
+          Assert-Export `
+            -Path $openvrLoader `
+            -Symbol "VR_GetGenericInterface"
+
+          Assert-Export `
+            -Path $openxrLoader `
+            -Symbol "xrGetInstanceProcAddr"
 
           $legacyDependencies = Get-DumpbinOutput `
             -Mode "/dependents" `
@@ -955,8 +1078,8 @@ jobs:
             throw "gmcl_vrmod_win64.dll does not import openvr_api.dll"
           }
 
-      - name: Upload Windows and Wine native artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: native-windows
           path: dist/windows/bin
@@ -971,6 +1094,7 @@ jobs:
       - resolve
       - build-linux
       - build-windows
+
     runs-on: ubuntu-24.04
     timeout-minutes: 25
 
@@ -980,14 +1104,14 @@ jobs:
 
     steps:
       - name: Set up Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6, Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           check-latest: false
           package-manager-cache: false
 
-      - name: Check out the exact vrmod-x64 addon
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, Node.js 24
+      - name: Check out exact vrmod-x64 addon
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ env.VRMOD_X64_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.vrmod_x64_sha }}
@@ -996,23 +1120,26 @@ jobs:
           persist-credentials: false
 
       - name: Download Linux artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8, Node.js 24
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: native-linux
           path: artifacts/linux
 
-      - name: Download Windows and Wine artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8, Node.js 24
+      - name: Download Windows artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: native-windows
           path: artifacts/windows
 
-      - name: Assemble direct-extraction directory tree
+      - name: Assemble direct-extraction tree
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf staging all-in-one.zip all-in-one.zip.sha256
+          rm -rf \
+            staging \
+            all-in-one.zip \
+            all-in-one.zip.sha256
 
           addon_root="staging/garrysmod/addons/vrmod-x64"
           lua_bin="staging/garrysmod/lua/bin"
@@ -1030,7 +1157,9 @@ jobs:
               exit 1
             fi
 
-            cp -a "src/vrmod-x64/$item" "$addon_root/"
+            cp -a \
+              "src/vrmod-x64/$item" \
+              "$addon_root/"
           done
 
           install -m 0644 \
@@ -1049,7 +1178,7 @@ jobs:
             artifacts/linux/licenses/. \
             staging/LICENSES/
 
-          # Compatibility locations used by Garry's Mod, Source and Wine.
+          # Garry's Mod, Source and Wine compatibility locations.
           install -m 0644 \
             "$lua_bin/openvr_api.dll" \
             staging/bin/openvr_api.dll
@@ -1111,55 +1240,56 @@ jobs:
           Typical Linux location:
             ~/.steam/steam/steamapps/common/GarrysMod
 
-          Do not extract the files into a separate all-in-one directory.
+          Do not create a separate all-in-one directory inside GarrysMod.
 
-          OpenVR / SteamVR backend
-          ------------------------
+          OpenVR and SteamVR
+          ------------------
 
-          SteamVR (Steam application ID 250820) must be installed and running
+          SteamVR, Steam application ID 250820, must be installed and running
           when the OpenVR backend is used.
 
-          openvr_api.dll and libopenvr_api.so are the official Valve OpenVR
-          client libraries. They communicate with the separately installed
-          SteamVR runtime.
+          openvr_api.dll and libopenvr_api.so are official Valve OpenVR client
+          libraries. They communicate with the separately installed SteamVR
+          runtime.
 
           SteamVR runtime binaries such as vrclient, vrserver, vrcompositor and
           vrmonitor are intentionally not included or redistributed.
 
-          OpenXR backend
-          --------------
+          OpenXR
+          ------
 
-          The package includes the official Khronos OpenXR loader. An active
+          The archive includes the official Khronos OpenXR loader. A compatible
           OpenXR runtime must still be installed and registered.
 
           When SteamVR is used as the OpenXR runtime, select SteamVR as the
           current OpenXR runtime in SteamVR settings.
 
-          A different conformant OpenXR runtime may also be used.
+          Another conformant OpenXR runtime may also be used.
 
-          Windows and Wine obtain the active runtime through the runtime's
-          Windows registration. Native Linux obtains it through the active
-          OpenXR runtime manifest.
+          Windows and Wine obtain the selected runtime through Windows runtime
+          registration. Native Linux obtains it through the active OpenXR
+          runtime manifest.
 
           Wine
           ----
 
-          A Windows Garry's Mod installation running through Wine or Proton uses
-          the Windows gmcl_vrmod_*_win64.dll modules and Windows loader DLLs.
+          Windows Garry's Mod running through Wine or Proton uses the Windows
+          gmcl_vrmod_*_win64.dll modules and Windows loader DLLs.
 
           No launcher script, batch file, PowerShell script or external helper
           executable is required by this archive.
 
-          CI validation
-          -------------
+          Validation limits
+          -----------------
 
-          CI verifies file formats, CPU architectures, exported symbols,
-          dependency resolution and package layout. A final functional smoke
-          test with Garry's Mod, a headset and the selected VR runtime must still
-          be performed on actual VR hardware.
+          CI checks file formats, x86-64 architectures, exported symbols,
+          native dependencies and ZIP layout.
+
+          A final functional smoke test with Garry's Mod, an actual headset and
+          the selected VR runtime must be performed on VR hardware.
           EOF
 
-      - name: Write immutable build manifest
+      - name: Write build manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -1168,13 +1298,13 @@ jobs:
           gVRMod all-in-one nightly
           =========================
 
-          Workflow run:
+          Workflow:
             repository: ${GITHUB_REPOSITORY}
             run_id: ${GITHUB_RUN_ID}
             run_number: ${GITHUB_RUN_NUMBER}
             workflow_commit: ${GITHUB_SHA}
 
-          Source revisions:
+          Sources:
             gVRMod: ${{ needs.resolve.outputs.gvrmod_sha }}
             vrmod-module-master: ${{ needs.resolve.outputs.openvr_module_sha }}
             vrmod-x64 gitlink: ${{ needs.resolve.outputs.vrmod_x64_sha }}
@@ -1185,12 +1315,12 @@ jobs:
             OpenXR SDK version: ${OPENXR_SDK_VERSION}
             OpenXR SDK commit: ${{ needs.resolve.outputs.openxr_sdk_sha }}
 
-          Component policy:
-            gmcl OpenVR modules: canonical Abyss-c0re prebuilt x86-64 binaries
-            OpenVR client loader: official Valve OpenVR release
+          Build policy:
+            gmcl OpenVR modules: Abyss-c0re canonical prebuilt x86-64 binaries
+            OpenVR loader: official Valve release
             gmcl OpenXR modules: built from gVRMod source
-            OpenXR loader: built from official Khronos OpenXR SDK source
-            SteamVR runtime: external requirement, not redistributed
+            OpenXR loader: installed from official Khronos CMake Loader component
+            SteamVR runtime: external requirement and not redistributed
             GitHub Actions JavaScript runtime: Node.js 24
 
           File SHA-256 checksums:
@@ -1207,42 +1337,55 @@ jobs:
               xargs -0 sha256sum
           ) >> staging/BUILD-MANIFEST.txt
 
-      - name: Reject launchers scripts and SteamVR runtime files
+      - name: Reject forbidden files
         shell: bash
         run: |
           set -euo pipefail
 
           if find staging -type l -print -quit | grep -q .; then
-            echo "::error::Symbolic links are not allowed in all-in-one.zip"
+            echo "::error::Symbolic links are not allowed"
             find staging -type l -print
             exit 1
           fi
 
-          if find staging -type f \
+          if find staging \
+            -type f \
             \( \
               -iname '*.sh' -o \
               -iname '*.bat' -o \
               -iname '*.cmd' -o \
               -iname '*.ps1' -o \
               -iname '*.exe' -o \
-              -iname '*.appimage' \
+              -iname '*.appimage' -o \
+              -iname '*.lib' -o \
+              -iname '*.exp' -o \
+              -iname '*.pdb' -o \
+              -iname '*.obj' \
             \) \
             -print -quit | grep -q .; then
-            echo "::error::Executable helper or launcher scripts were found"
-            find staging -type f \
+            echo "::error::Build product, launcher or helper script found"
+
+            find staging \
+              -type f \
               \( \
                 -iname '*.sh' -o \
                 -iname '*.bat' -o \
                 -iname '*.cmd' -o \
                 -iname '*.ps1' -o \
                 -iname '*.exe' -o \
-                -iname '*.appimage' \
+                -iname '*.appimage' -o \
+                -iname '*.lib' -o \
+                -iname '*.exp' -o \
+                -iname '*.pdb' -o \
+                -iname '*.obj' \
               \) \
               -print
+
             exit 1
           fi
 
-          if find staging -type f \
+          if find staging \
+            -type f \
             \( \
               -iname 'vrclient*.dll' -o \
               -iname 'vrclient*.so' -o \
@@ -1255,20 +1398,27 @@ jobs:
             exit 1
           fi
 
-      - name: Create reproducible ZIP metadata
+      - name: Create all-in-one.zip
         shell: bash
         run: |
           set -euo pipefail
 
-          find staging -type f -exec chmod u=rw,go=r {} +
-          find staging -type d -exec chmod u=rwx,go=rx {} +
+          find staging \
+            -type f \
+            -exec chmod u=rw,go=r {} +
+
+          find staging \
+            -type d \
+            -exec chmod u=rwx,go=rx {} +
 
           (
             cd staging
             zip -X -9 -r ../all-in-one.zip .
           )
 
-          sha256sum all-in-one.zip > all-in-one.zip.sha256
+          sha256sum \
+            all-in-one.zip \
+            > all-in-one.zip.sha256
 
       - name: Validate all-in-one.zip
         shell: bash
@@ -1277,10 +1427,8 @@ jobs:
 
           python3 - <<'PY'
           import hashlib
-          import os
           import pathlib
           import stat
-          import sys
           import zipfile
 
           archive_path = pathlib.Path("all-in-one.zip")
@@ -1343,7 +1491,15 @@ jobs:
           identical_pairs = (
               (
                   "garrysmod/lua/bin/openvr_api.dll",
+                  "bin/openvr_api.dll",
+              ),
+              (
+                  "garrysmod/lua/bin/openvr_api.dll",
                   "bin/win64/openvr_api.dll",
+              ),
+              (
+                  "garrysmod/lua/bin/libopenvr_api.so",
+                  "bin/libopenvr_api.so",
               ),
               (
                   "garrysmod/lua/bin/libopenvr_api.so",
@@ -1351,11 +1507,23 @@ jobs:
               ),
               (
                   "garrysmod/lua/bin/openxr_loader.dll",
+                  "bin/openxr_loader.dll",
+              ),
+              (
+                  "garrysmod/lua/bin/openxr_loader.dll",
                   "bin/win64/openxr_loader.dll",
               ),
               (
                   "garrysmod/lua/bin/libopenxr_loader.so",
+                  "bin/libopenxr_loader.so",
+              ),
+              (
+                  "garrysmod/lua/bin/libopenxr_loader.so",
                   "bin/linux64/libopenxr_loader.so",
+              ),
+              (
+                  "garrysmod/lua/bin/libopenxr_loader.so.1",
+                  "bin/libopenxr_loader.so.1",
               ),
               (
                   "garrysmod/lua/bin/libopenxr_loader.so.1",
@@ -1370,49 +1538,67 @@ jobs:
               if len(names) != len(set(names)):
                   raise SystemExit("ZIP contains duplicate member names")
 
-              bad_member = archive.testzip()
-              if bad_member is not None:
-                  raise SystemExit(f"Corrupt ZIP member: {bad_member}")
+              corrupt_member = archive.testzip()
 
-              normalized_files = set()
+              if corrupt_member is not None:
+                  raise SystemExit(
+                      f"Corrupt ZIP member: {corrupt_member}"
+                  )
+
+              packaged_files = set()
 
               for info in infos:
                   name = info.filename
 
                   if "\\" in name:
-                      raise SystemExit(f"Backslash in ZIP path: {name}")
+                      raise SystemExit(
+                          f"Backslash in ZIP path: {name}"
+                      )
 
-                  pure = pathlib.PurePosixPath(name)
+                  path = pathlib.PurePosixPath(name)
 
-                  if pure.is_absolute() or ".." in pure.parts:
-                      raise SystemExit(f"Unsafe ZIP path: {name}")
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(
+                          f"Unsafe ZIP path: {name}"
+                      )
 
-                  if not pure.parts:
+                  if not path.parts:
                       raise SystemExit("Empty ZIP member name")
 
-                  if pure.parts[0] not in valid_roots:
-                      raise SystemExit(f"Unexpected ZIP root: {name}")
+                  if path.parts[0] not in valid_roots:
+                      raise SystemExit(
+                          f"Unexpected ZIP root: {name}"
+                      )
 
                   mode = info.external_attr >> 16
+
                   if stat.S_ISLNK(mode):
-                      raise SystemExit(f"Symbolic link in ZIP: {name}")
+                      raise SystemExit(
+                          f"Symbolic link in ZIP: {name}"
+                      )
 
                   if info.is_dir():
                       continue
 
-                  normalized_files.add(name)
+                  packaged_files.add(name)
 
-                  suffix = pure.suffix.lower()
-                  if suffix in forbidden_suffixes:
-                      raise SystemExit(f"Forbidden build/helper file: {name}")
+                  if path.suffix.lower() in forbidden_suffixes:
+                      raise SystemExit(
+                          f"Forbidden build/helper file: {name}"
+                      )
 
-                  if pure.name.lower() in forbidden_runtime_names:
-                      raise SystemExit(f"SteamVR runtime file included: {name}")
+                  if path.name.lower() in forbidden_runtime_names:
+                      raise SystemExit(
+                          f"SteamVR runtime file included: {name}"
+                      )
 
                   if info.file_size <= 0:
-                      raise SystemExit(f"Empty packaged file: {name}")
+                      raise SystemExit(
+                          f"Empty packaged file: {name}"
+                      )
 
-              missing = sorted(required - normalized_files)
+              missing = sorted(required - packaged_files)
+
               if missing:
                   raise SystemExit(
                       "Required package members are missing:\n"
@@ -1420,19 +1606,28 @@ jobs:
                   )
 
               for first, second in identical_pairs:
-                  first_hash = hashlib.sha256(archive.read(first)).digest()
-                  second_hash = hashlib.sha256(archive.read(second)).digest()
+                  first_hash = hashlib.sha256(
+                      archive.read(first)
+                  ).digest()
+
+                  second_hash = hashlib.sha256(
+                      archive.read(second)
+                  ).digest()
 
                   if first_hash != second_hash:
                       raise SystemExit(
-                          f"Compatibility copies differ: {first} and {second}"
+                          "Compatibility copies differ: "
+                          f"{first} and {second}"
                       )
 
-          print(f"Validated {archive_path} ({archive_path.stat().st_size} bytes)")
+          print(
+              f"Validated {archive_path} "
+              f"({archive_path.stat().st_size} bytes)"
+          )
           PY
 
       - name: Upload all-in-one artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: all-in-one
           path: |
@@ -1477,4 +1672,5 @@ jobs:
           Workflow run: ${GITHUB_RUN_ID}
 
           SteamVR or another compatible VR runtime must be installed separately.
+
           Extract the contents of all-in-one.zip directly into the GarrysMod installation directory."
