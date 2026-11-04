@@ -30,7 +30,7 @@ env:
 jobs:
   resolve:
     name: Resolve immutable revisions
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     outputs:
@@ -168,7 +168,7 @@ jobs:
   build-linux:
     name: Build Linux modules
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
@@ -1095,7 +1095,7 @@ jobs:
       - build-linux
       - build-windows
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 25
 
     permissions:
